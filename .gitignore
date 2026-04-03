@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Environment
+.env
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+*.db
+
+# Data and outputs (never commit scraped data)
+data/chroma_db/
+data/*.db
+outputs/
+
+# Airflow
+airflow/logs/
+airflow/plugins/*.pyc
+
+# MLflow artifacts
+mlflow/artifacts/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Mypy
+.mypy_cache/

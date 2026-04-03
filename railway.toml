@@ -1,0 +1,34 @@
+# MarketForge AI — Railway Deployment Config
+# Each service is deployed as a separate Railway service.
+
+# ── FastAPI (web service) ──────────────────────────────────────────────────────
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "uvicorn api.main:app --host 0.0.0.0 --port $PORT"
+healthcheckPath = "/api/v1/health"
+healthcheckTimeout = 30
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 5
+
+# Environment variables set in Railway dashboard (never commit):
+# DATABASE_URL          — auto-set by Railway PostgreSQL addon
+# REDIS_URL             — auto-set by Railway Redis addon
+# GEMINI_API_KEY        — Google AI Studio
+# LANGCHAIN_API_KEY     — LangSmith
+# LANGCHAIN_TRACING_V2  — true
+# LANGCHAIN_PROJECT     — marketforge-ai
+# ADZUNA_APP_ID         — Adzuna developer portal
+# ADZUNA_APP_KEY        — Adzuna developer portal
+# REED_API_KEY          — Reed developer portal
+# TAVILY_API_KEY        — Tavily
+# SMTP_HOST             — smtp.gmail.com
+# SMTP_PORT             — 587
+# SMTP_USER             — Gmail address
+# SMTP_PASSWORD         — Gmail app password
+# REPORT_RECIPIENT_EMAIL— target email for weekly report
+# ENVIRONMENT           — production
+# LOG_LEVEL             — INFO
+# LOG_FORMAT            — json
+# MLFLOW_TRACKING_URI   — http://mlflow-service.railway.internal:5001
