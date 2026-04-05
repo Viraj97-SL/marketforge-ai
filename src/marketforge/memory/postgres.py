@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS market.jobs (
     citizens_only       BOOLEAN,
     degree_required     TEXT DEFAULT 'not_stated',
     equity_offered      BOOLEAN,
+    url                 TEXT,
     source              TEXT NOT NULL,
     posted_date         DATE,
     scraped_at          TIMESTAMPTZ DEFAULT NOW()
@@ -356,6 +357,28 @@ def init_database() -> None:
                 raise
         conn.commit()
 
+    # ── Column migrations (safe to run on existing DBs) ───────────────────────
+    jobs_t = "jobs" if is_sqlite else "market.jobs"
+    migrations = [
+        f"ALTER TABLE {jobs_t} ADD COLUMN IF NOT EXISTS url TEXT",
+    ]
+    with engine.connect() as conn:
+        for stmt in migrations:
+            try:
+                if is_sqlite:
+                    # SQLite doesn't support IF NOT EXISTS on ALTER TABLE
+                    # Check manually before adding
+                    from sqlalchemy import inspect as sa_inspect
+                    insp = sa_inspect(engine)
+                    cols = [c["name"] for c in insp.get_columns(jobs_t.replace("market.", ""))]
+                    if "url" not in cols:
+                        conn.execute(text(f"ALTER TABLE {jobs_t.replace('market.', '')} ADD COLUMN url TEXT"))
+                else:
+                    conn.execute(text(stmt))
+            except Exception:
+                pass
+        conn.commit()
+
     logger.info("database.init.complete", dialect=engine.dialect.name)
 
 
@@ -509,13 +532,13 @@ class JobStore:
                      salary_min, salary_max, work_model, experience_level,
                      role_category, industry, company_stage, is_startup,
                      offers_sponsorship, citizens_only, degree_required,
-                     source, posted_date, scraped_at)
+                     url, source, posted_date, scraped_at)
                 VALUES
                     (:job_id, :dedup_hash, :run_id, :title, :description, :company, :location,
                      :salary_min, :salary_max, :work_model, :experience_level,
                      :role_category, :industry, :company_stage, :is_startup,
                      :offers_sponsorship, :citizens_only, :degree_required,
-                     :source, :posted_date, :scraped_at)
+                     :url, :source, :posted_date, :scraped_at)
                 ON CONFLICT(job_id) DO NOTHING
             """), {
                 "job_id": j.job_id, "dedup_hash": j.dedup_hash, "run_id": run_id,
@@ -527,6 +550,7 @@ class JobStore:
                 "is_startup": int(j.is_startup) if self._is_sqlite else j.is_startup,
                 "offers_sponsorship": j.offers_sponsorship,
                 "citizens_only": j.citizens_only, "degree_required": j.degree_required,
+                "url": j.url or None,
                 "source": j.source,
                 "posted_date": j.posted_date.isoformat() if j.posted_date else None,
                 "scraped_at": j.scraped_at.isoformat() if j.scraped_at else now,
