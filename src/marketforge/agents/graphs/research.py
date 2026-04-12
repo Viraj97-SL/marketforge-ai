@@ -164,7 +164,14 @@ async def run_research_pipeline(run_id: str | None = None) -> dict[str, Any]:
     run_id = run_id or str(uuid.uuid4())[:8]
     config = {"configurable": {"thread_id": run_id}}
 
-    final = await research_graph.ainvoke({"run_id": run_id}, config=config)
+    from marketforge.memory.postgres import get_pg_checkpointer
+    async with get_pg_checkpointer() as checkpointer:
+        graph = build_research_graph().compile(
+            checkpointer=checkpointer,
+            name="research_intelligence",
+        )
+        final = await graph.ainvoke({"run_id": run_id}, config=config)
+
     return {
         "run_id":        run_id,
         "papers":        len(final.get("research_papers", [])),

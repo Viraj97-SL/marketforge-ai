@@ -392,8 +392,14 @@ async def run_full_pipeline(
         "promoted_models":   [],
     }
 
+    from marketforge.memory.postgres import get_pg_checkpointer
     logger.info("master.invoke.start", run_id=run_id)
-    final = await master_graph.ainvoke(initial, config=config)
+    async with get_pg_checkpointer() as checkpointer:
+        graph = build_master_graph().compile(
+            checkpointer=checkpointer,
+            name="marketforge_master_pipeline",
+        )
+        final = await graph.ainvoke(initial, config=config)
     logger.info(
         "master.invoke.complete",
         run_id=run_id,

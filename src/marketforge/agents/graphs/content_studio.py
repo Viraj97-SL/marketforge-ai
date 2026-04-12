@@ -229,7 +229,14 @@ async def run_content_pipeline(
         "emerging_signals": emerging_signals or [],
     }
 
-    final = await content_studio_graph.ainvoke(initial, config=config)
+    from marketforge.memory.postgres import get_pg_checkpointer
+    async with get_pg_checkpointer() as checkpointer:
+        graph = build_content_studio_graph().compile(
+            checkpointer=checkpointer,
+            name="content_studio",
+        )
+        final = await graph.ainvoke(initial, config=config)
+
     return {
         "run_id":         run_id,
         "report_draft":   final.get("report_draft", ""),

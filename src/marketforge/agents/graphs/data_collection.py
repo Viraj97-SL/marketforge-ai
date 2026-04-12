@@ -372,7 +372,13 @@ async def run_data_collection_pipeline(
         "source_errors":  {},
     }
 
-    final_state = await data_collection_graph.ainvoke(initial_state, config=config)
+    from marketforge.memory.postgres import get_pg_checkpointer
+    async with get_pg_checkpointer() as checkpointer:
+        graph = build_data_collection_graph().compile(
+            checkpointer=checkpointer,
+            name="data_collection",
+        )
+        final_state = await graph.ainvoke(initial_state, config=config)
 
     return {
         "run_id":        final_state.get("run_id", run_id),

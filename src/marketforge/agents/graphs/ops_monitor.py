@@ -186,10 +186,13 @@ async def run_ops_heartbeat(run_id: str | None = None) -> dict[str, Any]:
     run_id = run_id or str(uuid.uuid4())[:8]
     config = {"configurable": {"thread_id": run_id}}
 
-    final = await ops_graph.ainvoke(
-        {"run_id": run_id, "trigger": "heartbeat", "alerts_dispatched": []},
-        config=config,
-    )
+    from marketforge.memory.postgres import get_pg_checkpointer
+    async with get_pg_checkpointer() as checkpointer:
+        graph = build_ops_graph().compile(checkpointer=checkpointer, name="ops_observability")
+        final = await graph.ainvoke(
+            {"run_id": run_id, "trigger": "heartbeat", "alerts_dispatched": []},
+            config=config,
+        )
     return {
         "run_id":   run_id,
         "quality":  final.get("ops_quality", "unknown"),
@@ -201,10 +204,13 @@ async def run_ops_on_pipeline_complete(run_id: str) -> dict[str, Any]:
     """Triggered at the end of each ingestion pipeline run."""
     config = {"configurable": {"thread_id": f"ops_{run_id}"}}
 
-    final = await ops_graph.ainvoke(
-        {"run_id": run_id, "trigger": "pipeline_complete", "alerts_dispatched": []},
-        config=config,
-    )
+    from marketforge.memory.postgres import get_pg_checkpointer
+    async with get_pg_checkpointer() as checkpointer:
+        graph = build_ops_graph().compile(checkpointer=checkpointer, name="ops_observability")
+        final = await graph.ainvoke(
+            {"run_id": run_id, "trigger": "pipeline_complete", "alerts_dispatched": []},
+            config=config,
+        )
     return {
         "run_id":  run_id,
         "quality": final.get("ops_quality", "unknown"),

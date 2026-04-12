@@ -251,7 +251,14 @@ async def run_market_analysis_pipeline(
         "week_start": week_start,
     }
 
-    final = await market_analysis_graph.ainvoke(initial_state, config=config)
+    from marketforge.memory.postgres import get_pg_checkpointer
+    async with get_pg_checkpointer() as checkpointer:
+        graph = build_market_analysis_graph().compile(
+            checkpointer=checkpointer,
+            name="market_analysis",
+        )
+        final = await graph.ainvoke(initial_state, config=config)
+
     return {
         "run_id":          run_id,
         "week_start":      week_start,

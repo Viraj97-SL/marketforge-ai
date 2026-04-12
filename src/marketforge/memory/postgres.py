@@ -10,6 +10,8 @@ any other project on the same PostgreSQL instance.
 from __future__ import annotations
 
 import json
+import os
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -21,6 +23,49 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from marketforge.config.settings import settings
 
 logger = structlog.get_logger(__name__)
+
+
+# ── LangGraph checkpointer factory ───────────────────────────────────────────
+
+@asynccontextmanager
+async def get_pg_checkpointer():
+    """
+    Async context manager that yields a LangGraph checkpointer.
+
+    Production (Railway): returns AsyncPostgresSaver backed by DATABASE_URL.
+    Local dev / CI:       returns in-memory MemorySaver (zero infrastructure).
+
+    Usage:
+        async with get_pg_checkpointer() as cp:
+            graph = build_my_graph().compile(checkpointer=cp, name="my_graph")
+            await graph.ainvoke(state, config=config)
+    """
+    db_url = os.getenv("DATABASE_URL", settings.database_url)
+    is_postgres = "postgresql" in db_url and "sqlite" not in db_url
+
+    if is_postgres:
+        # AsyncPostgresSaver uses psycopg3 — strip SQLAlchemy driver prefix
+        conn_str = (db_url
+                    .replace("postgresql+asyncpg://", "postgresql://")
+                    .replace("postgresql+psycopg2://", "postgresql://")
+                    .replace("postgresql+psycopg://", "postgresql://")
+                    .replace("postgres://", "postgresql://"))
+        try:
+            from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+            async with AsyncPostgresSaver.from_conn_string(conn_str) as checkpointer:
+                await checkpointer.setup()   # idempotent: creates checkpoint tables
+                logger.info("langgraph.checkpointer", backend="postgres")
+                yield checkpointer
+                return
+        except Exception as exc:
+            logger.warning("langgraph.checkpointer.postgres_failed", error=str(exc),
+                           fallback="memory")
+
+    # Fallback: in-memory (dev / CI / Railway before DB is ready)
+    from langgraph.checkpoint.memory import MemorySaver
+    logger.info("langgraph.checkpointer", backend="memory")
+    yield MemorySaver()
+
 
 # ── Engine singletons ─────────────────────────────────────────────────────────
 _async_engine: AsyncEngine | None = None

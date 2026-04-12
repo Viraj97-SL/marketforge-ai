@@ -186,7 +186,14 @@ async def run_ml_pipeline(
         "promoted_models":    [],
     }
 
-    final = await ml_engineering_graph.ainvoke(initial, config=config)
+    from marketforge.memory.postgres import get_pg_checkpointer
+    async with get_pg_checkpointer() as checkpointer:
+        graph = build_ml_engineering_graph().compile(
+            checkpointer=checkpointer,
+            name="ml_engineering",
+        )
+        final = await graph.ainvoke(initial, config=config)
+
     return {
         "run_id":          run_id,
         "features_computed": final.get("feature_count", 0),

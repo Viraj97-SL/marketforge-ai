@@ -237,7 +237,14 @@ async def run_qa_pipeline(
         "report_draft": report_draft or "",
     }
 
-    final = await qa_graph.ainvoke(initial, config=config)
+    from marketforge.memory.postgres import get_pg_checkpointer
+    async with get_pg_checkpointer() as checkpointer:
+        graph = build_qa_graph().compile(
+            checkpointer=checkpointer,
+            name="qa_testing",
+        )
+        final = await graph.ainvoke(initial, config=config)
+
     return {
         "run_id":         run_id,
         "qa_pass":        final.get("qa_pass",        True),
