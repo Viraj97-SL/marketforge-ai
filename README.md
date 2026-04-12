@@ -366,6 +366,6 @@ Description text
 
 ## Author
 
-Viraj Bulugahapitiya · MSc Data Science (University of Hertfordshire) · 2026
+Viraj Bulugahapitiya ·AI Engineer - MSc Data Science (University of Hertfordshire) · 2026
 
 Portfolio project demonstrating production-grade AI engineering: LangGraph multi-agent orchestration, NLP pipelines, async FastAPI, Railway-deployed PostgreSQL + Redis, MLflow, LangSmith tracing — sub-$5/month infrastructure budget.
