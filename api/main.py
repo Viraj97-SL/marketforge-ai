@@ -3,6 +3,7 @@ MarketForge AI — FastAPI Application
 
 Endpoints:
   POST /api/v1/career/analyse     — personalised career advice (LLM-backed)
+  POST /api/v1/career/cv-analyse  — CV upload → ATS score + career gap plan
   GET  /api/v1/market/skills      — top skills by role category
   GET  /api/v1/market/salary      — salary benchmarks
   GET  /api/v1/market/snapshot    — full weekly market snapshot
@@ -20,7 +21,7 @@ from contextlib import asynccontextmanager
 from typing import Annotated, Any
 
 import structlog
-from fastapi import FastAPI, HTTPException, Query, Request, status
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
@@ -83,8 +84,11 @@ async def rate_limit_middleware(request: Request, call_next):
     ip  = request.client.host if request.client else "unknown"
     path = request.url.path
 
+    # CV analyse has its own per-endpoint limiter (3/hour) — skip middleware check
+    if path == "/api/v1/career/cv-analyse":
+        pass
     # Career advisor: 10 req/min (LLM-backed, expensive)
-    if path.startswith("/api/v1/career"):
+    elif path.startswith("/api/v1/career"):
         if not limiter.is_allowed(f"career:{ip}", limit=10, window_seconds=60):
             return PlainTextResponse("Rate limit exceeded", status_code=429)
 
@@ -161,7 +165,7 @@ async def analyse_career(profile: UserProfile, request: Request) -> CareerIntell
     skills_text = sec_result.sanitised_text
 
     # ── Market match via SBERT + ChromaDB ────────────────────────────────────
-    match_pct, match_dist = _compute_market_match(profile.skills)
+    match_pct, match_dist = _compute_market_match(profile.skills, profile.target_role)
 
     # ── Skill gap analysis ────────────────────────────────────────────────────
     skill_gaps = _compute_skill_gaps(profile.skills, profile.target_role)
@@ -191,41 +195,64 @@ async def analyse_career(profile: UserProfile, request: Request) -> CareerIntell
     )
 
 
-def _compute_market_match(skills: list[str]) -> tuple[float, dict[str, float]]:
-    """SBERT embed the skill list and query market data for similarity."""
+def _compute_market_match(
+    skills:      list[str],
+    target_role: str = "",
+) -> tuple[float, dict[str, float]]:
+    """
+    SBERT embed the skill list and compare against job descriptions for the
+    target role.  When target_role is provided, only jobs with a matching
+    role_category are sampled so the score reflects fit for that role.
+    """
     try:
         import numpy as np
         from marketforge.memory.postgres import get_sync_engine
         from sqlalchemy import text
-        engine = get_sync_engine()
-        is_sqlite = engine.dialect.name == "sqlite"
-        table = "jobs" if is_sqlite else "market.jobs"
+        from marketforge.cv.ats_scorer import _normalise_role
 
-        # Sample recent job titles for comparison
+        engine    = get_sync_engine()
+        is_sqlite = engine.dialect.name == "sqlite"
+        table     = "jobs" if is_sqlite else "market.jobs"
+        role_cat  = _normalise_role(target_role) if target_role else ""
+
         with engine.connect() as conn:
-            rows = conn.execute(text(f"""
-                SELECT title, role_category FROM {table}
-                ORDER BY scraped_at DESC LIMIT 200
-            """)).fetchall()
+            if role_cat and role_cat != "other":
+                # Role-specific sample — try up to 300 to get enough rows
+                rows = conn.execute(text(f"""
+                    SELECT title, role_category FROM {table}
+                    WHERE role_category = :role
+                    ORDER BY scraped_at DESC LIMIT 300
+                """), {"role": role_cat}).fetchall()
+                # Fall back to all roles if insufficient data for this role
+                if len(rows) < 20:
+                    rows = conn.execute(text(f"""
+                        SELECT title, role_category FROM {table}
+                        ORDER BY scraped_at DESC LIMIT 200
+                    """)).fetchall()
+            else:
+                rows = conn.execute(text(f"""
+                    SELECT title, role_category FROM {table}
+                    ORDER BY scraped_at DESC LIMIT 200
+                """)).fetchall()
 
         if not rows:
             return 50.0, {"strong": 0.3, "moderate": 0.4, "weak": 0.3}
 
-        model      = _get_sbert()
-        profile_emb= model.encode(" ".join(skills), normalize_embeddings=True)
-        job_texts  = [f"{r[0]} {r[1] or ''}" for r in rows]
-        job_embs   = model.encode(job_texts, normalize_embeddings=True, batch_size=64)
+        model       = _get_sbert()
+        profile_emb = model.encode(" ".join(skills), normalize_embeddings=True)
+        job_texts   = [f"{r[0]} {r[1] or ''}" for r in rows]
+        job_embs    = model.encode(job_texts, normalize_embeddings=True, batch_size=64)
 
         similarities = np.dot(job_embs, profile_emb)
-        strong   = float(np.mean(similarities > 0.75))
-        moderate = float(np.mean((similarities > 0.55) & (similarities <= 0.75)))
-        weak     = float(np.mean(similarities <= 0.55))
-        match_pct= float(np.mean(similarities) * 100)
+        strong    = float(np.mean(similarities > 0.75))
+        moderate  = float(np.mean((similarities > 0.55) & (similarities <= 0.75)))
+        weak      = float(np.mean(similarities <= 0.55))
+        match_pct = float(np.mean(similarities) * 100)
 
         return min(max(match_pct, 0), 100), {
-            "strong": round(strong, 3),
+            "strong":   round(strong,   3),
             "moderate": round(moderate, 3),
-            "weak": round(weak, 3),
+            "weak":     round(weak,     3),
         }
     except Exception as exc:
         logger.warning("market_match.error", error=str(exc))
@@ -233,32 +260,59 @@ def _compute_market_match(skills: list[str]) -> tuple[float, dict[str, float]]:
 
 
 def _compute_skill_gaps(user_skills: list[str], target_role: str) -> list[dict[str, Any]]:
-    """Compare user skills against top-demanded skills for the target role."""
+    """
+    Compare user skills against top-demanded skills for the target role.
+    Queries live job_skills filtered by role_category; falls back to the
+    global weekly snapshot if no role-specific data exists.
+    """
     try:
         from marketforge.memory.postgres import get_sync_engine
         from sqlalchemy import text
         import json
+        from marketforge.cv.ats_scorer import _normalise_role
 
         engine    = get_sync_engine()
         is_sqlite = engine.dialect.name == "sqlite"
+        jobs_t    = "jobs"       if is_sqlite else "market.jobs"
+        skills_t  = "job_skills" if is_sqlite else "market.job_skills"
         snap_t    = "weekly_snapshots" if is_sqlite else "market.weekly_snapshots"
+        role_cat  = _normalise_role(target_role)
+        user_lower = {s.lower() for s in user_skills}
+
+        top_skills: dict[str, int] = {}
 
         with engine.connect() as conn:
-            row = conn.execute(text(f"""
-                SELECT top_skills FROM {snap_t}
-                ORDER BY week_start DESC LIMIT 1
-            """)).fetchone()
+            # Live per-role query
+            rows = conn.execute(text(f"""
+                SELECT js.skill, COUNT(*) AS cnt
+                FROM {skills_t} js
+                JOIN {jobs_t} j ON j.job_id = js.job_id
+                WHERE j.role_category = :role
+                GROUP BY js.skill
+                ORDER BY cnt DESC
+                LIMIT 50
+            """), {"role": role_cat}).fetchall()
 
-        if not row or not row[0]:
-            return []
-
-        top_skills = json.loads(row[0]) if isinstance(row[0], str) else row[0]
-        user_lower = {s.lower() for s in user_skills}
+            if rows:
+                top_skills = {r[0]: r[1] for r in rows}
+            else:
+                # Snapshot fallback
+                row = conn.execute(text(f"""
+                    SELECT top_skills FROM {snap_t}
+                    WHERE role_category = 'all'
+                    ORDER BY week_start DESC LIMIT 1
+                """)).fetchone()
+                if row and row[0]:
+                    top_skills = json.loads(row[0]) if isinstance(row[0], str) else row[0]
 
         gaps = []
         for skill, count in sorted(top_skills.items(), key=lambda x: -x[1]):
             if skill.lower() not in user_lower:
-                gaps.append({"skill": skill, "market_demand": count, "priority": "high" if count > 50 else "medium"})
+                gaps.append({
+                    "skill":         skill,
+                    "market_demand": count,
+                    "priority":      "high" if count > 50 else "medium",
+                })
             if len(gaps) >= 10:
                 break
         return gaps
@@ -543,6 +597,108 @@ async def get_trending_skills(
     return result
 
 
+# ── Jobs listing endpoint ─────────────────────────────────────────────────────
+
+@app.get("/api/v1/jobs", summary="Browse indexed UK AI/ML job listings")
+async def get_jobs(
+    role_category:    str | None = Query(default=None, description="Filter by role category"),
+    work_model:       str | None = Query(default=None, description="remote / hybrid / onsite"),
+    experience_level: str | None = Query(default=None, description="junior / mid / senior / lead"),
+    source:           str | None = Query(default=None, description="adzuna / reed / etc."),
+    visa_only:        bool       = Query(default=False, description="Only jobs with visa sponsorship"),
+    page:             int        = Query(default=1, ge=1, description="Page number"),
+    page_size:        int        = Query(default=20, ge=1, le=100, description="Jobs per page"),
+) -> dict:
+    cache_key = f"jobs:{role_category}:{work_model}:{experience_level}:{source}:{visa_only}:{page}:{page_size}"
+    cached = cache.get(cache_key)
+    if cached:
+        return cached
+
+    from marketforge.memory.postgres import get_sync_engine
+    from sqlalchemy import text
+
+    engine    = get_sync_engine()
+    is_sqlite = engine.dialect.name == "sqlite"
+    jobs_t    = "jobs"       if is_sqlite else "market.jobs"
+    skills_t  = "job_skills" if is_sqlite else "market.job_skills"
+
+    # Build WHERE clauses
+    conditions = []
+    params: dict = {}
+    if role_category and role_category != "all":
+        conditions.append("j.role_category = :role")
+        params["role"] = role_category
+    if work_model:
+        conditions.append("j.work_model = :wm")
+        params["wm"] = work_model
+    if experience_level:
+        conditions.append("j.experience_level = :el")
+        params["el"] = experience_level
+    if source:
+        conditions.append("j.source = :src")
+        params["src"] = source
+    if visa_only:
+        conditions.append("j.offers_sponsorship = TRUE")
+
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    offset = (page - 1) * page_size
+    params["limit"] = page_size
+    params["offset"] = offset
+
+    # Skills subquery — dialect-aware
+    if is_sqlite:
+        skills_sub = (
+            f"(SELECT GROUP_CONCAT(skill, ', ') FROM "
+            f"(SELECT skill FROM {skills_t} WHERE job_id = j.job_id ORDER BY confidence DESC LIMIT 8))"
+        )
+    else:
+        skills_sub = (
+            f"(SELECT STRING_AGG(skill, ', ' ORDER BY confidence DESC) FROM "
+            f"(SELECT skill, confidence FROM {skills_t} WHERE job_id = j.job_id "
+            f"ORDER BY confidence DESC LIMIT 8) _s)"
+        )
+
+    with engine.connect() as conn:
+        total = conn.execute(text(
+            f"SELECT COUNT(*) FROM {jobs_t} j {where}"
+        ), params).scalar() or 0
+
+        rows = conn.execute(text(f"""
+            SELECT j.job_id, j.title, j.company, j.location,
+                   j.salary_min, j.salary_max, j.work_model,
+                   j.experience_level, j.role_category, j.source,
+                   j.offers_sponsorship, j.posted_date, j.scraped_at, j.url,
+                   j.is_startup, j.company_stage,
+                   COALESCE({skills_sub}, '') AS skills
+            FROM {jobs_t} j
+            {where}
+            ORDER BY j.scraped_at DESC
+            LIMIT :limit OFFSET :offset
+        """), params).mappings().fetchall()
+
+    jobs = []
+    for r in rows:
+        d = dict(r)
+        # Serialise dates as strings
+        for f in ("posted_date", "scraped_at"):
+            if d.get(f) is not None and not isinstance(d[f], str):
+                d[f] = str(d[f])
+        # Split skills CSV into list
+        d["skills"] = [s.strip() for s in (d.get("skills") or "").split(",") if s.strip()]
+        jobs.append(d)
+
+    result = {
+        "jobs":      jobs,
+        "total":     int(total),
+        "page":      page,
+        "page_size": page_size,
+        "pages":     max(1, -(-int(total) // page_size)),  # ceiling div
+    }
+    # Short TTL so freshly-scraped jobs appear quickly
+    cache.set(cache_key, result)
+    return result
+
+
 # ── Health endpoint ───────────────────────────────────────────────────────────
 
 @app.get("/api/v1/health", response_model=HealthResponse, summary="Platform health")
@@ -580,6 +736,285 @@ async def health() -> HealthResponse:
         jobs_total=int(total_jobs),
         version="0.1.0",
     )
+
+
+# ── CV Upload + ATS Score + Career Gap endpoint ───────────────────────────────
+
+class CVATSBreakdown(BaseModel):
+    keyword_match: float
+    structure:     float
+    readability:   float
+    completeness:  float
+    format_safety: float
+
+
+class CVGapPlan(BaseModel):
+    short_term: list[str]   # 0–3 months
+    mid_term:   list[str]   # 3–12 months
+    long_term:  list[str]   # 12+ months
+
+
+class CVAnalysisReport(BaseModel):
+    session_token:     str              # anonymous, no PII
+    ats_score:         float            # 0–100
+    ats_grade:         str              # A+/A/B/C/D
+    ats_breakdown:     CVATSBreakdown
+    ats_issues:        list[str]        # actionable fix suggestions
+    skills_found:      list[str]        # skills extracted from CV
+    skills_missing:    list[str]        # top market skills not in CV
+    keyword_match_pct: float
+    market_match_pct:  float
+    gap_plan:          CVGapPlan
+    narrative_summary: str
+    pii_scrubbed:      list[str]        # PII types that were found and stripped
+    data_retained:     bool = False     # always False — GDPR guarantee
+
+
+@app.post(
+    "/api/v1/career/cv-analyse",
+    response_model=CVAnalysisReport,
+    summary="CV upload → ATS score + career gap analysis",
+    description=(
+        "Upload a CV (PDF or DOCX, max 5 MB) and receive an ATS compatibility score, "
+        "skill gap analysis, and a short/mid/long-term career plan. "
+        "No CV data is stored — processing is in-memory only (GDPR compliant)."
+    ),
+)
+async def analyse_cv(
+    request:     Request,
+    cv_file:     UploadFile = File(..., description="PDF or DOCX CV, max 5 MB"),
+    target_role: str        = "ml_engineer",
+    consent:     bool       = False,
+) -> CVAnalysisReport:
+    from marketforge.cv.scanner  import scan_file
+    from marketforge.cv.parser   import parse_cv
+    from marketforge.cv.ats_scorer import score_cv
+    from marketforge.cv.gdpr     import build_gdpr_context, ConsentNotGiven
+
+    ip = request.client.host if request.client else "unknown"
+
+    # ── Rate limit: 3 CV analyses per IP per hour (expensive operation) ────────
+    if not limiter.is_allowed(f"cv_analyse:{ip}", limit=3, window_seconds=3600):
+        raise HTTPException(status_code=429, detail="CV analysis rate limit exceeded (3/hour)")
+
+    # ── GDPR consent gate ─────────────────────────────────────────────────────
+    if not consent:
+        raise HTTPException(
+            status_code=403,
+            detail="GDPR consent is required. Set consent=true to confirm you agree to the privacy notice.",
+        )
+
+    # ── Read file into memory (never touch disk) ──────────────────────────────
+    raw_bytes = await cv_file.read()
+
+    # ── Security scan ─────────────────────────────────────────────────────────
+    scan = scan_file(raw_bytes)
+    if not scan.allowed:
+        logger.warning("cv.endpoint.scan_rejected", reason=scan.rejection_reason, ip=ip)
+        raise HTTPException(
+            status_code=422,
+            detail=f"File rejected by security scan: {scan.rejection_reason}",
+        )
+
+    # ── Parse CV ──────────────────────────────────────────────────────────────
+    cv = parse_cv(raw_bytes, scan.file_type)
+    if cv.error:
+        raise HTTPException(status_code=422, detail=f"CV could not be parsed: {cv.error}")
+
+    # ── GDPR: strip PII before any further processing ─────────────────────────
+    try:
+        gdpr_ctx = build_gdpr_context(cv.raw_text, scan.file_hash, consent=True)
+    except ConsentNotGiven:
+        raise HTTPException(status_code=403, detail="Consent check failed")
+
+    # Replace raw_text with scrubbed version; drop original reference
+    cv.raw_text = gdpr_ctx.scrubbed_text
+    del raw_bytes   # discard original bytes
+
+    # ── ATS scoring ────────────────────────────────────────────────────────────
+    ats = score_cv(cv, target_role)
+
+    # ── Market match (SBERT) ───────────────────────────────────────────────────
+    match_pct, _ = _compute_market_match(ats.skills_found or [target_role], target_role)
+
+    # ── Phase 2: ML gap analysis (demand × salary × recency priority scoring) ──
+    from marketforge.cv.gap_analyser import analyse_gaps
+    ml_gaps     = analyse_gaps(ats.skills_found, target_role, top_n=15)
+    # ML-ranked missing skills (flat list for display, ordered by priority)
+    skills_missing = [g.skill for g in ml_gaps.top_n(10)]
+    # If DB has no market data yet fall back to simple heuristic
+    if not skills_missing:
+        skills_missing = [i["skill"] for i in _compute_skill_gaps(ats.skills_found, target_role)[:10]]
+
+    # ── Phase 2: LLM gap plan seeded with ML-bucketed skills ──────────────────
+    gap_plan, narrative = await _generate_cv_gap_plan(
+        ats_score      = ats.total,
+        skills_found   = ats.skills_found,
+        ml_short_term  = [g.skill for g in ml_gaps.short_term[:4]],
+        ml_mid_term    = [g.skill for g in ml_gaps.mid_term[:4]],
+        ml_long_term   = [g.skill for g in ml_gaps.long_term[:3]],
+        target_role    = target_role,
+        match_pct      = match_pct,
+    )
+
+    # ── Output guardrails ──────────────────────────────────────────────────────
+    from marketforge.agents.security.guardrails import validate_output
+    narrative, _ = validate_output(narrative)
+
+    logger.info(
+        "cv.endpoint.complete",
+        session=gdpr_ctx.session_token[:8],
+        ats_score=ats.total,
+        ats_grade=ats.grade,
+        ml_gaps_total=len(ml_gaps.all_gaps),
+    )
+
+    return CVAnalysisReport(
+        session_token     = gdpr_ctx.session_token,
+        ats_score         = ats.total,
+        ats_grade         = ats.grade,
+        ats_breakdown     = CVATSBreakdown(**ats.breakdown),
+        ats_issues        = ats.issues,
+        skills_found      = ats.skills_found,
+        skills_missing    = skills_missing,
+        keyword_match_pct = ats.keyword_match_pct,
+        market_match_pct  = round(match_pct, 1),
+        gap_plan          = gap_plan,
+        narrative_summary = narrative,
+        pii_scrubbed      = gdpr_ctx.pii_types_found,
+        data_retained     = False,
+    )
+
+
+async def _generate_cv_gap_plan(
+    ats_score:     float,
+    skills_found:  list[str],
+    ml_short_term: list[str],
+    ml_mid_term:   list[str],
+    ml_long_term:  list[str],
+    target_role:   str,
+    match_pct:     float,
+) -> tuple[CVGapPlan, str]:
+    """
+    LLM call to generate short/mid/long-term plan.
+    Seeded with ML-ranked skill buckets from gap_analyser — receives structured data only,
+    never raw CV text.
+    """
+    try:
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        from langchain_core.messages import HumanMessage
+
+        found_str  = ", ".join(skills_found[:15]) or "none detected"
+        short_str  = ", ".join(ml_short_term) or "none identified"
+        mid_str    = ", ".join(ml_mid_term)   or "none identified"
+        long_str   = ", ".join(ml_long_term)  or "none identified"
+
+        prompt = f"""You are a UK AI/ML career advisor. Generate a structured career development plan.
+
+STRUCTURED DATA (use only this — do not invent facts):
+- ATS score: {ats_score:.0f}/100
+- Target role: {target_role}
+- Skills in CV: {found_str}
+- Market match: {match_pct:.0f}%
+- ML-ranked quick-win skills to add (0-3 months): {short_str}
+- ML-ranked medium-effort skills (3-12 months): {mid_str}
+- ML-ranked deep-expertise skills (12+ months): {long_str}
+
+Respond in this exact format:
+
+NARRATIVE: [2 sentences: current position assessment based on ATS score and market match]
+
+SHORT_TERM (0-3 months):
+- [specific action for each skill listed above, e.g. courses/certs]
+- [action 2]
+- [action 3]
+
+MID_TERM (3-12 months):
+- [project or bootcamp for each skill listed]
+- [action 2]
+- [action 3]
+
+LONG_TERM (12+ months):
+- [advanced specialisation or portfolio for each skill listed]
+- [action 2]
+
+Keep actions specific and achievable. Do not mention company names."""
+
+        llm = ChatGoogleGenerativeAI(
+            model=settings.llm.fast_model,
+            google_api_key=settings.llm.gemini_api_key,
+            temperature=0.2,
+        )
+        response = llm.invoke([HumanMessage(content=prompt)])
+        text     = response.content.strip()
+
+        # Parse structured sections
+        def _extract_bullets(section_text: str) -> list[str]:
+            return [
+                line.strip().lstrip("-•*123456789. ").strip()
+                for line in section_text.split("\n")
+                if line.strip() and line.strip()[0] in "-•*123456789"
+            ][:3]
+
+        narrative  = ""
+        short_term: list[str] = []
+        mid_term:   list[str] = []
+        long_term:  list[str] = []
+
+        current_section = ""
+        for line in text.split("\n"):
+            if line.startswith("NARRATIVE:"):
+                narrative = line.replace("NARRATIVE:", "").strip()
+                current_section = "narrative"
+            elif "SHORT_TERM" in line:
+                current_section = "short"
+            elif "MID_TERM" in line:
+                current_section = "mid"
+            elif "LONG_TERM" in line:
+                current_section = "long"
+            elif line.strip().startswith("-") or line.strip().startswith("•"):
+                item = line.strip().lstrip("-• ").strip()
+                if item:
+                    if current_section == "short":
+                        short_term.append(item)
+                    elif current_section == "mid":
+                        mid_term.append(item)
+                    elif current_section == "long":
+                        long_term.append(item)
+
+        if not narrative:
+            narrative = (
+                f"Your CV scores {ats_score:.0f}/100 for ATS compatibility with a "
+                f"{match_pct:.0f}% market match for {target_role} roles. "
+                f"Prioritise adding the missing skills to close key gaps."
+            )
+
+        # Fill empty LLM buckets with ML-seed defaults
+        def _seed(llm_items: list[str], ml_skills: list[str], verb: str) -> list[str]:
+            if llm_items:
+                return llm_items
+            return [f"{verb} {s}" for s in ml_skills[:3]] if ml_skills else [f"{verb} top missing skills"]
+
+        return (
+            CVGapPlan(
+                short_term = _seed(short_term, ml_short_term, "Complete a course or certification in"),
+                mid_term   = _seed(mid_term,   ml_mid_term,   "Build a portfolio project using"),
+                long_term  = _seed(long_term,  ml_long_term,  "Develop deep expertise in"),
+            ),
+            narrative,
+        )
+
+    except Exception as exc:
+        logger.error("cv.gap_plan.error", error=str(exc))
+        # Graceful degradation: return ML-bucketed skills directly as actionable items
+        short_items = [f"Add {s} to your CV — quick course available" for s in ml_short_term[:3]] or ["Complete a course in top missing skills", "Add metrics to experience bullets", "Mirror job-ad keywords in CV"]
+        mid_items   = [f"Build a project demonstrating {s}" for s in ml_mid_term[:3]]   or ["Build portfolio project using missing skills", "Complete relevant certification"]
+        long_items  = [f"Develop deep expertise in {s}" for s in ml_long_term[:2]]      or ["Target senior roles after closing skill gaps"]
+        return (
+            CVGapPlan(short_term=short_items, mid_term=mid_items, long_term=long_items),
+            f"CV scored {ats_score:.0f}/100 with a {match_pct:.0f}% market match for {target_role} roles. "
+            f"Address the skill gaps above to improve ATS compatibility.",
+        )
 
 
 # ── Prometheus metrics ────────────────────────────────────────────────────────

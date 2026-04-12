@@ -25,17 +25,30 @@ from sqlalchemy import text
 def test_db(tmp_path_factory):
     """Fresh SQLite DB for the API test module."""
     tmp = tmp_path_factory.mktemp("api_db")
-    db_path = str(tmp / "api_test.db")
-    os.environ["DATABASE_URL_SYNC"] = f"sqlite:///{db_path}"
+    db_path    = str(tmp / "api_test.db")
+    sqlite_url = f"sqlite:///{db_path}"
 
     from marketforge.memory import postgres
-    postgres._sync_engine = None
+    from marketforge.config.settings import settings as _settings
+
+    old_engine   = postgres._sync_engine
+    old_sync_url = _settings.database_url_sync
+
+    postgres._sync_engine       = None
+    _settings.database_url_sync = sqlite_url
+    os.environ["DATABASE_URL_SYNC"] = sqlite_url
 
     from marketforge.memory.postgres import init_database
     init_database()
     yield db_path
 
-    postgres._sync_engine = None
+    if postgres._sync_engine is not None:
+        postgres._sync_engine.dispose()
+    postgres._sync_engine       = None
+    _settings.database_url_sync = old_sync_url
+    os.environ["DATABASE_URL_SYNC"] = old_sync_url
+    if old_engine is not None:
+        postgres._sync_engine = old_engine
 
 
 @pytest.fixture(scope="module")

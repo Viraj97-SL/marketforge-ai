@@ -18,7 +18,8 @@ Autonomous multi-department agentic AI system that continuously monitors, analys
 | **Job ingestion** | Scrapes Adzuna, Reed, Wellfound, specialist boards — ~200–800 roles/run |
 | **NLP extraction** | 3-gate pipeline: taxonomy exact match → spaCy NER → Gemini LLM fallback |
 | **Market analysis** | Skill demand index, salary percentiles, sponsorship rates, city distribution |
-| **Career advisor** | User enters their skills → AI gap analysis benchmarked against live data |
+| **Career advisor** | Enter skills manually → AI gap analysis benchmarked against live data |
+| **CV analyser** | Upload PDF/DOCX → instant ATS score (0–100, A+→D), skill gap plan (short/mid/long-term), GDPR-compliant |
 | **Research signals** | arXiv + tech blogs monitored; predicts emerging skills 4–8 weeks early |
 | **Weekly report** | Auto-generated LinkedIn-quality market briefing |
 | **Dashboard** | 7-page Streamlit UI — Market Overview, Skill Intelligence, Salary & Geography, Career Advisor, Research Signals, Job Board, Pipeline Status |
@@ -101,7 +102,7 @@ Nine departments, each a LangGraph DeepAgent hierarchy running a Plan → Execut
 ```
 marketforge-ai/
 ├── api/
-│   ├── main.py              # FastAPI app — 6 endpoints
+│   ├── main.py              # FastAPI app — 8 endpoints incl. CV analysis
 │   └── security.py          # Rate limiting, auth middleware
 ├── airflow/
 │   └── dags/                # 5 Airflow DAG definitions
@@ -128,6 +129,12 @@ marketforge-ai/
 │   ├── models/
 │   │   ├── job.py           # RawJob, EnrichedJob, MarketSnapshot, …
 │   │   └── state.py         # LangGraph state TypedDicts
+│   ├── cv/                  # CV analysis module (GDPR-compliant, in-memory only)
+│   │   ├── scanner.py       # Security gate: magic bytes, PDF JS, DOCX macros, ClamAV
+│   │   ├── parser.py        # PDF (pdfplumber → pypdf fallback) + DOCX extraction
+│   │   ├── ats_scorer.py    # 5-dimension ATS scoring: keywords/structure/readability/completeness/format
+│   │   ├── gdpr.py          # PII scrubbing, consent gate, anonymous session token
+│   │   └── gap_analyser.py  # ML gap prioritisation — demand×salary×recency scoring
 │   ├── nlp/
 │   │   ├── extractor.py     # NLP pipeline coordinator
 │   │   └── taxonomy.py      # Gate1 (flashtext), Gate2 (spaCy), Gate3 (Gemini)
@@ -260,6 +267,8 @@ Dashboard at `http://localhost:8501`.
 | `GET` | `/api/v1/market/skills` | Skill demand by role category |
 | `GET` | `/api/v1/market/trending` | Rising / declining skills (week-on-week) |
 | `POST` | `/api/v1/career/analyse` | Career gap analysis for a given skill set |
+| `POST` | `/api/v1/career/cv-analyse` | Upload CV (PDF/DOCX) → ATS score + gap plan (GDPR-compliant, no data stored) |
+| `GET` | `/api/v1/jobs` | Browse indexed jobs with filters |
 | `GET` | `/api/v1/pipeline/runs` | Recent pipeline execution history |
 
 ---
@@ -348,7 +357,8 @@ Well within the $5/month infrastructure budget.
 - **Phase 2** — Analysis Core: Market Analysis dept, Redis cache, MLflow, basic dashboard
 - **Phase 3** — Agentic Intelligence: ML Engineering, Research Intelligence, Content Studio, LangSmith tracing
 - **Phase 4** — User Features: Career Advisor API, Security dept, FastAPI hardening
-- **Phase 5** *(ongoing)* — Ops dept, remaining connectors, Grafana, public launch
+- **Phase 5** — CV Analyser: ATS scoring, GDPR-compliant CV upload, ML gap prioritisation, Next.js frontend integration
+- **Phase 6** *(ongoing)* — Ops dept, remaining connectors, Grafana, public launch
 
 ---
 

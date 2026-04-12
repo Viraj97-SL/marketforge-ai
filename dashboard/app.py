@@ -55,56 +55,103 @@ def _chart(fig, height=380):
     return fig
 
 # ── Global CSS ────────────────────────────────────────────────────────────────
-# Rules:
-#   • No global h1/h2/h3/p overrides — Streamlit hoists them out of HTML blocks
-#   • Target Streamlit-specific test-ids for native widget styling
-#   • No border on .stPlotlyChart — avoids double-border with chart iframe
 st.markdown(f"""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap');
 html, body, [class*="css"] {{ font-family: 'Inter', sans-serif !important; }}
 
-/* chrome */
+/* ── Keyframe animations ─────────────────────────────────────────────────── */
+@keyframes mf-pulse {{
+  0%,100% {{ opacity:1; transform:scale(1); }}
+  50%      {{ opacity:.65; transform:scale(1.35); }}
+}}
+@keyframes mf-float {{
+  0%,100% {{ transform:translateY(0) rotate(0deg); }}
+  33%     {{ transform:translateY(-18px) rotate(1deg); }}
+  66%     {{ transform:translateY(-8px) rotate(-1deg); }}
+}}
+@keyframes mf-float2 {{
+  0%,100% {{ transform:translateY(0) rotate(0deg); }}
+  40%     {{ transform:translateY(-22px) rotate(-2deg); }}
+  70%     {{ transform:translateY(-6px) rotate(1deg); }}
+}}
+@keyframes mf-glow {{
+  0%,100% {{ box-shadow:0 0 18px rgba(0,198,167,.12), 0 0 0 1px rgba(0,198,167,.1); }}
+  50%     {{ box-shadow:0 0 35px rgba(0,198,167,.28), 0 0 0 1px rgba(0,198,167,.2); }}
+}}
+@keyframes mf-shimmer {{
+  0%   {{ background-position:-800px 0; }}
+  100% {{ background-position:800px 0; }}
+}}
+@keyframes mf-fadeup {{
+  from {{ opacity:0; transform:translateY(16px); }}
+  to   {{ opacity:1; transform:translateY(0); }}
+}}
+@keyframes mf-slide-right {{
+  from {{ opacity:0; transform:translateX(-14px); }}
+  to   {{ opacity:1; transform:translateX(0); }}
+}}
+@keyframes mf-spin-slow {{
+  from {{ transform:rotate(0deg); }}
+  to   {{ transform:rotate(360deg); }}
+}}
+@keyframes mf-border-glow {{
+  0%,100% {{ border-color:rgba(0,198,167,.18); }}
+  50%     {{ border-color:rgba(0,198,167,.45); }}
+}}
+@keyframes mf-bar-fill {{
+  from {{ width:0%; }}
+  to   {{ width:var(--bar-w); }}
+}}
+@keyframes mf-count {{
+  from {{ opacity:0; transform:scale(.85); }}
+  to   {{ opacity:1; transform:scale(1); }}
+}}
+
+/* ── Chrome ──────────────────────────────────────────────────────────────── */
 #MainMenu, footer, header, .stDeployButton {{ display:none !important; }}
 .block-container {{ padding:2rem 2.5rem 4rem !important; max-width:1440px !important; }}
 
-/* app bg */
+/* ── Scrollbar ───────────────────────────────────────────────────────────── */
+::-webkit-scrollbar {{ width:6px; height:6px; }}
+::-webkit-scrollbar-track {{ background:{BG}; }}
+::-webkit-scrollbar-thumb {{ background:{B2}; border-radius:3px; }}
+::-webkit-scrollbar-thumb:hover {{ background:{CA}; }}
+
+/* ── App background — animated radial orbs ───────────────────────────────── */
 .stApp {{
     background:{BG};
     background-image:
-        radial-gradient(ellipse 80% 45% at -5% -10%, rgba(0,198,167,0.06) 0%, transparent 55%),
-        radial-gradient(ellipse 60% 35% at 105% 5%,  rgba(59,130,246,0.045) 0%, transparent 50%);
+        radial-gradient(ellipse 90% 50% at -8% -12%, rgba(0,198,167,.075) 0%, transparent 58%),
+        radial-gradient(ellipse 65% 40% at 108% 4%,  rgba(59,130,246,.06) 0%, transparent 52%),
+        radial-gradient(ellipse 40% 30% at 50% 100%, rgba(139,92,246,.04) 0%, transparent 50%);
 }}
 
-/* sidebar */
+/* ── Sidebar ─────────────────────────────────────────────────────────────── */
 [data-testid="stSidebar"] {{
-    background:{S1} !important;
+    background:linear-gradient(180deg, {S1} 0%, {BG} 100%) !important;
     border-right:1px solid {B1} !important;
 }}
 [data-testid="stSidebar"] > div:first-child {{ padding:0 !important; }}
-section[data-testid="stSidebar"] {{ min-width:220px !important; max-width:220px !important; }}
-
-/* sidebar radio nav */
+section[data-testid="stSidebar"] {{ min-width:230px !important; max-width:230px !important; }}
 [data-testid="stSidebar"] .stRadio {{ padding:0 0.5rem !important; }}
 [data-testid="stSidebar"] .stRadio > label {{ display:none !important; }}
 [data-testid="stSidebar"] .stRadio > div {{ gap:2px !important; }}
 [data-testid="stSidebar"] .stRadio label {{
     color:{T2} !important; font-size:0.82rem !important; font-weight:500 !important;
-    padding:0.55rem 0.85rem !important; border-radius:8px !important;
-    cursor:pointer !important; transition:all 0.1s !important;
-    border:1px solid transparent !important; display:flex !important;
-    align-items:center !important;
+    padding:0.55rem 0.85rem !important; border-radius:9px !important;
+    cursor:pointer !important; transition:all .18s ease !important;
+    border:1px solid transparent !important; display:flex !important; align-items:center !important;
 }}
 [data-testid="stSidebar"] .stRadio label:hover {{
-    color:{T1} !important; background:rgba(255,255,255,0.04) !important;
+    color:{T1} !important; background:rgba(255,255,255,.04) !important;
+    transform:translateX(2px) !important;
 }}
 [data-testid="stSidebar"] .stRadio label[data-checked="true"] {{
-    color:{CA} !important;
-    background:rgba(0,198,167,0.08) !important;
-    border-color:rgba(0,198,167,0.18) !important;
+    color:{CA} !important; background:rgba(0,198,167,.1) !important;
+    border-color:rgba(0,198,167,.22) !important;
+    box-shadow:0 0 12px rgba(0,198,167,.08) !important;
 }}
-
-/* sidebar misc */
 [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {{
     color:{T3} !important; font-size:0.72rem !important; margin:0 !important;
 }}
@@ -113,39 +160,36 @@ section[data-testid="stSidebar"] {{ min-width:220px !important; max-width:220px 
     border:1px solid {B2} !important; color:{T2} !important;
     border-radius:7px !important; font-size:0.78rem !important;
     font-weight:500 !important; padding:0.42rem 0.9rem !important;
+    transition:all .18s ease !important;
 }}
 [data-testid="stSidebar"] .stButton button:hover {{
     border-color:{CA} !important; color:{CA} !important;
-    background:rgba(0,198,167,0.05) !important;
+    background:rgba(0,198,167,.06) !important;
 }}
 
-/* divider */
+/* ── Divider ─────────────────────────────────────────────────────────────── */
 hr {{ border:none !important; border-top:1px solid {B1} !important; margin:1.5rem 0 !important; }}
 
-/* native Streamlit text widgets */
-[data-testid="stMarkdownContainer"] p {{ color:{T2}; font-size:0.875rem; line-height:1.65; }}
+/* ── Text ────────────────────────────────────────────────────────────────── */
+[data-testid="stMarkdownContainer"] p {{ color:{T2}; font-size:.875rem; line-height:1.65; }}
 [data-testid="stHeadingWithActionElements"] h1 {{
-    color:{T1} !important; font-size:1.6rem !important; font-weight:800 !important;
-    letter-spacing:-0.03em !important;
+    color:{T1} !important; font-size:1.6rem !important; font-weight:800 !important; letter-spacing:-.03em !important;
 }}
 [data-testid="stHeadingWithActionElements"] h2 {{
-    color:{T1} !important; font-size:1.1rem !important; font-weight:700 !important;
-    letter-spacing:-0.02em !important;
+    color:{T1} !important; font-size:1.1rem !important; font-weight:700 !important; letter-spacing:-.02em !important;
 }}
 [data-testid="stHeadingWithActionElements"] h3 {{
-    color:{T1} !important; font-size:0.95rem !important; font-weight:600 !important;
+    color:{T1} !important; font-size:.95rem !important; font-weight:600 !important;
 }}
-[data-testid="stCaptionContainer"] p {{
-    color:{T2} !important; font-size:0.8rem !important;
-}}
+[data-testid="stCaptionContainer"] p {{ color:{T2} !important; font-size:.8rem !important; }}
 
-/* tabs */
+/* ── Tabs ────────────────────────────────────────────────────────────────── */
 button[data-baseweb="tab"] {{
     background:transparent !important; border:none !important;
-    color:{T2} !important; font-size:0.82rem !important; font-weight:500 !important;
-    padding:0.6rem 1.1rem !important;
+    color:{T2} !important; font-size:.82rem !important; font-weight:500 !important;
+    padding:.6rem 1.1rem !important;
     border-bottom:2px solid transparent !important; border-radius:0 !important;
-    transition:color 0.1s, border-color 0.1s !important;
+    transition:color .15s, border-color .15s !important;
 }}
 button[data-baseweb="tab"]:hover {{ color:{T1} !important; }}
 button[data-baseweb="tab"][aria-selected="true"] {{
@@ -153,97 +197,179 @@ button[data-baseweb="tab"][aria-selected="true"] {{
 }}
 [data-testid="stTabsContent"] {{ padding-top:1.25rem !important; }}
 
-/* selectbox */
+/* ── Selectbox ───────────────────────────────────────────────────────────── */
 .stSelectbox > div > div {{
     background:{S2} !important; border:1px solid {B1} !important;
-    border-radius:8px !important; color:{T1} !important; font-size:0.84rem !important;
+    border-radius:8px !important; color:{T1} !important; font-size:.84rem !important;
+    transition:border-color .15s !important;
 }}
 .stSelectbox > div > div:focus-within {{
-    border-color:{CA} !important; box-shadow:0 0 0 2px rgba(0,198,167,0.1) !important;
+    border-color:{CA} !important; box-shadow:0 0 0 3px rgba(0,198,167,.12) !important;
 }}
 .stSelectbox label {{
-    color:{T2} !important; font-size:0.72rem !important; font-weight:600 !important;
-    text-transform:uppercase !important; letter-spacing:0.07em !important;
+    color:{T2} !important; font-size:.72rem !important; font-weight:600 !important;
+    text-transform:uppercase !important; letter-spacing:.07em !important;
 }}
 
-/* text inputs */
+/* ── Text inputs ─────────────────────────────────────────────────────────── */
 .stTextInput input, .stTextArea textarea {{
     background:{S2} !important; border:1px solid {B1} !important;
     border-radius:8px !important; color:{T1} !important;
-    font-family:Inter,sans-serif !important; font-size:0.875rem !important;
+    font-family:Inter,sans-serif !important; font-size:.875rem !important;
+    transition:border-color .15s, box-shadow .15s !important;
 }}
 .stTextInput input:focus, .stTextArea textarea:focus {{
-    border-color:{CA} !important;
-    box-shadow:0 0 0 2px rgba(0,198,167,0.1) !important;
-    outline:none !important;
+    border-color:{CA} !important; box-shadow:0 0 0 3px rgba(0,198,167,.12) !important; outline:none !important;
 }}
 .stTextInput label, .stTextArea label {{
-    color:{T2} !important; font-size:0.72rem !important; font-weight:600 !important;
-    text-transform:uppercase !important; letter-spacing:0.07em !important;
+    color:{T2} !important; font-size:.72rem !important; font-weight:600 !important;
+    text-transform:uppercase !important; letter-spacing:.07em !important;
 }}
 
-/* form wrapper */
+/* ── Form ────────────────────────────────────────────────────────────────── */
 [data-testid="stForm"] {{
     background:{S1} !important; border:1px solid {B1} !important;
-    border-radius:14px !important; padding:1.75rem 2rem !important;
+    border-radius:16px !important; padding:1.75rem 2rem !important;
+    box-shadow:0 4px 24px rgba(0,0,0,.25) !important;
+    animation:mf-fadeup .4s ease both !important;
 }}
 
-/* primary button */
+/* ── Buttons ─────────────────────────────────────────────────────────────── */
 .stButton > button[kind="primary"] {{
-    background:linear-gradient(135deg,{CA},{CB}) !important;
+    background:linear-gradient(135deg,{CA} 0%,{CB} 100%) !important;
     border:none !important; color:#021A14 !important;
-    font-weight:700 !important; font-size:0.875rem !important;
-    border-radius:8px !important; padding:0.58rem 1.75rem !important;
+    font-weight:700 !important; font-size:.875rem !important;
+    border-radius:9px !important; padding:.58rem 1.75rem !important;
+    transition:opacity .15s, transform .15s, box-shadow .15s !important;
+    box-shadow:0 4px 14px rgba(0,198,167,.25) !important;
 }}
-.stButton > button[kind="primary"]:hover {{ opacity:0.87 !important; }}
+.stButton > button[kind="primary"]:hover {{
+    opacity:.9 !important; transform:translateY(-1px) !important;
+    box-shadow:0 6px 20px rgba(0,198,167,.35) !important;
+}}
+.stButton > button[kind="secondary"] {{
+    background:{S2} !important; border:1px solid {B2} !important; color:{T2} !important;
+    border-radius:9px !important; font-size:.82rem !important; font-weight:500 !important;
+    transition:all .15s !important;
+}}
+.stButton > button[kind="secondary"]:hover {{
+    border-color:{CA} !important; color:{CA} !important; background:rgba(0,198,167,.06) !important;
+}}
 
-/* expander */
+/* ── Role chip buttons (job board) ───────────────────────────────────────── */
+.mf-chip-active > button {{
+    background:linear-gradient(135deg,{CA}22,{CB}22) !important;
+    border:1px solid {CA}55 !important; color:{CA} !important;
+    font-size:.78rem !important; font-weight:700 !important;
+    border-radius:20px !important; padding:.28rem .85rem !important;
+    box-shadow:0 0 12px {CA}22 !important;
+}}
+.mf-chip-inactive > button {{
+    background:{S2} !important; border:1px solid {B1} !important; color:{T2} !important;
+    font-size:.78rem !important; font-weight:500 !important;
+    border-radius:20px !important; padding:.28rem .85rem !important;
+    transition:all .15s !important;
+}}
+.mf-chip-inactive > button:hover {{
+    border-color:{CA}44 !important; color:{T1} !important; background:{S3} !important;
+}}
+
+/* ── Expander ────────────────────────────────────────────────────────────── */
 .streamlit-expanderHeader {{
     background:{S2} !important; border:1px solid {B1} !important;
     border-radius:10px !important; color:{T1} !important;
-    font-size:0.85rem !important; font-weight:500 !important;
+    font-size:.85rem !important; font-weight:500 !important;
+    transition:border-color .15s !important;
 }}
-.streamlit-expanderHeader:hover {{ border-color:{B2} !important; }}
+.streamlit-expanderHeader:hover {{ border-color:{CA}44 !important; }}
 .streamlit-expanderContent {{
     background:{S1} !important; border:1px solid {B1} !important;
-    border-top:none !important; border-radius:0 0 10px 10px !important;
-    padding:1rem !important;
+    border-top:none !important; border-radius:0 0 10px 10px !important; padding:1rem !important;
 }}
 
-/* dataframe */
+/* ── Dataframe ───────────────────────────────────────────────────────────── */
 [data-testid="stDataFrame"] {{
-    border:1px solid {B1} !important; border-radius:12px !important;
-    overflow:hidden !important;
+    border:1px solid {B1} !important; border-radius:12px !important; overflow:hidden !important;
 }}
 
-/* native metrics */
+/* ── Native metrics ──────────────────────────────────────────────────────── */
 [data-testid="stMetric"] {{
     background:{S1} !important; border:1px solid {B1} !important;
     border-radius:12px !important; padding:1rem 1.25rem !important;
+    transition:all .2s ease !important;
+}}
+[data-testid="stMetric"]:hover {{
+    border-color:rgba(0,198,167,.3) !important;
+    box-shadow:0 4px 16px rgba(0,198,167,.08) !important;
+    transform:translateY(-1px) !important;
 }}
 [data-testid="metric-container"] label {{
-    color:{T2} !important; font-size:0.68rem !important; font-weight:700 !important;
-    text-transform:uppercase !important; letter-spacing:0.08em !important;
+    color:{T2} !important; font-size:.68rem !important; font-weight:700 !important;
+    text-transform:uppercase !important; letter-spacing:.08em !important;
 }}
 [data-testid="stMetricValue"] {{
     color:{T1} !important; font-size:1.5rem !important;
-    font-weight:700 !important; letter-spacing:-0.025em !important;
+    font-weight:700 !important; letter-spacing:-.025em !important;
 }}
 
-/* alert */
+/* ── Alert ───────────────────────────────────────────────────────────────── */
 [data-testid="stAlert"] {{
-    background:{S2} !important; border-radius:10px !important;
-    font-size:0.84rem !important;
+    background:{S2} !important; border-radius:10px !important; font-size:.84rem !important;
 }}
 
-/* checkbox */
-.stCheckbox label {{ color:{T2} !important; font-size:0.84rem !important; }}
+/* ── Checkbox ────────────────────────────────────────────────────────────── */
+.stCheckbox label {{ color:{T2} !important; font-size:.84rem !important; }}
 
-/* spinner */
+/* ── Spinner ─────────────────────────────────────────────────────────────── */
 .stSpinner > div {{ border-top-color:{CA} !important; }}
 
-/* plotly: transparent bg, no outer border (avoids double border) */
+/* ── Plotly ──────────────────────────────────────────────────────────────── */
 .stPlotlyChart {{ background:transparent !important; border:none !important; padding:0 !important; }}
+
+/* ── Job card hover ──────────────────────────────────────────────────────── */
+.mf-job-card {{
+    transition:transform .2s ease, border-color .2s ease, box-shadow .2s ease !important;
+}}
+.mf-job-card:hover {{
+    transform:translateY(-3px) !important;
+    border-color:rgba(0,198,167,.32) !important;
+    box-shadow:0 8px 32px rgba(0,0,0,.35), 0 0 0 1px rgba(0,198,167,.12) !important;
+}}
+
+/* ── KPI card hover ──────────────────────────────────────────────────────── */
+.mf-kpi:hover {{
+    transform:translateY(-2px) !important;
+    box-shadow:0 6px 24px rgba(0,0,0,.3), 0 0 0 1px rgba(0,198,167,.15) !important;
+}}
+
+/* ── Page-in animation for main content ──────────────────────────────────── */
+.main .block-container > div > div {{ animation:mf-fadeup .35s ease both; }}
+
+/* ── Gradient text utility ───────────────────────────────────────────────── */
+.mf-gradient-text {{
+    background:linear-gradient(135deg,{CA},{CB});
+    -webkit-background-clip:text; -webkit-text-fill-color:transparent;
+    background-clip:text;
+}}
+
+/* ── Glowing accent dot ──────────────────────────────────────────────────── */
+.mf-dot-pulse {{
+    animation:mf-pulse 2s ease-in-out infinite !important;
+}}
+
+/* ── Floating orb ────────────────────────────────────────────────────────── */
+.mf-orb-1 {{ animation:mf-float 8s ease-in-out infinite !important; }}
+.mf-orb-2 {{ animation:mf-float2 11s ease-in-out infinite !important; }}
+
+/* ── Skill bar animation ─────────────────────────────────────────────────── */
+.mf-bar {{
+    animation:mf-bar-fill .9s cubic-bezier(.4,0,.2,1) both !important;
+}}
+
+/* ── Card entrance ───────────────────────────────────────────────────────── */
+.mf-card-enter {{
+    animation:mf-fadeup .4s ease both !important;
+}}
 </style>
 """, unsafe_allow_html=True)
 
@@ -253,43 +379,67 @@ button[data-baseweb="tab"][aria-selected="true"] {{
 # font-size/weight instead. Streamlit hoists heading/p elements out of containers.
 
 def _dot(c):
-    return (f'<span style="display:inline-block;width:7px;height:7px;border-radius:50%;'
-            f'background:{c};box-shadow:0 0 6px {c}88;flex-shrink:0;"></span>')
+    return (f'<span class="mf-dot-pulse" style="display:inline-block;width:7px;height:7px;'
+            f'border-radius:50%;background:{c};box-shadow:0 0 8px {c}99;flex-shrink:0;"></span>')
 
 
 def hero(icon, title, desc, badge="", badge_c=OK):
-    """Page hero — no heading tags, all divs."""
+    """Page hero with animated floating orbs."""
     bdg = ""
     if badge:
         bdg = (f'<span style="display:inline-flex;align-items:center;gap:5px;'
                f'background:{badge_c}18;border:1px solid {badge_c}33;'
-               f'color:{badge_c};font-size:0.68rem;font-weight:700;letter-spacing:.06em;'
+               f'color:{badge_c};font-size:.68rem;font-weight:700;letter-spacing:.06em;'
                f'padding:.18rem .6rem;border-radius:20px;margin-left:.65rem;">'
                f'{_dot(badge_c)}&nbsp;{badge}</span>')
     st.markdown(f"""
-<div style="padding-bottom:1.6rem;margin-bottom:1rem;border-bottom:1px solid {B1};">
-  <div style="display:flex;align-items:center;flex-wrap:wrap;margin-bottom:.45rem;">
-    <span style="font-size:1.3rem;margin-right:.5rem;line-height:1;">{icon}</span>
-    <span style="font-size:1.6rem;font-weight:800;color:{T1};letter-spacing:-.035em;
-                 line-height:1.2;">{title}</span>{bdg}
+<div style="position:relative;overflow:hidden;padding:2rem 2.2rem 1.8rem;margin-bottom:1.5rem;
+            background:linear-gradient(135deg,{S1} 0%,{S2} 100%);
+            border:1px solid {B1};border-radius:20px;
+            box-shadow:0 4px 32px rgba(0,0,0,.3);">
+  <!-- floating orbs -->
+  <div class="mf-orb-1" style="position:absolute;top:-60px;right:-40px;width:220px;height:220px;
+       border-radius:50%;background:radial-gradient(circle,rgba(0,198,167,.12) 0%,transparent 70%);
+       pointer-events:none;"></div>
+  <div class="mf-orb-2" style="position:absolute;bottom:-80px;left:30%;width:280px;height:280px;
+       border-radius:50%;background:radial-gradient(circle,rgba(59,130,246,.08) 0%,transparent 70%);
+       pointer-events:none;"></div>
+  <div class="mf-orb-1" style="position:absolute;top:10px;left:-30px;width:140px;height:140px;
+       border-radius:50%;background:radial-gradient(circle,rgba(139,92,246,.07) 0%,transparent 70%);
+       pointer-events:none;animation-delay:-3s;"></div>
+  <!-- content -->
+  <div style="position:relative;z-index:1;">
+    <div style="display:flex;align-items:center;flex-wrap:wrap;gap:.5rem;margin-bottom:.55rem;">
+      <span style="font-size:1.5rem;line-height:1;filter:drop-shadow(0 0 8px {CA}66);">{icon}</span>
+      <span style="font-size:1.75rem;font-weight:900;color:{T1};letter-spacing:-.04em;
+                   line-height:1.15;background:linear-gradient(135deg,{T1} 40%,{CA} 100%);
+                   -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+                   background-clip:text;">{title}</span>{bdg}
+    </div>
+    <div style="color:{T2};font-size:.9rem;line-height:1.65;max-width:640px;
+                border-left:2px solid {CA}55;padding-left:.85rem;">{desc}</div>
   </div>
-  <div style="color:{T2};font-size:.875rem;line-height:1.6;max-width:640px;">{desc}</div>
 </div>""", unsafe_allow_html=True)
 
 
 def kpi(cols_tuple, items):
     """items: list of (label, value, note, accent_top)"""
     for col, (label, value, note, accent) in zip(cols_tuple, items):
-        top = f"border-top:2px solid {CA};" if accent else f"border-top:1px solid {B1};"
-        note_h = (f'<div style="color:{T3};font-size:.72rem;margin-top:.4rem;'
-                  f'line-height:1.4;">{note}</div>') if note else ""
+        accent_style = (f"border-top:2px solid {CA};box-shadow:0 0 16px rgba(0,198,167,.07);"
+                        if accent else f"border-top:1px solid {B1};")
+        note_h = (f'<div style="color:{T3};font-size:.72rem;margin-top:.45rem;line-height:1.4;">'
+                  f'{note}</div>') if note else ""
         col.markdown(f"""
-<div style="background:{S1};border:1px solid {B1};{top}border-radius:12px;
-            padding:1.2rem 1.4rem;height:100%;">
-  <div style="color:{T2};font-size:.67rem;font-weight:700;text-transform:uppercase;
-              letter-spacing:.09em;margin-bottom:.5rem;">{label}</div>
-  <div style="color:{T1};font-size:1.65rem;font-weight:800;letter-spacing:-.03em;
-              line-height:1;">{value}</div>
+<div class="mf-kpi" style="background:linear-gradient(145deg,{S1},{S2});border:1px solid {B1};
+            {accent_style}border-radius:14px;padding:1.25rem 1.4rem;height:100%;
+            transition:all .2s ease;cursor:default;animation:mf-fadeup .4s ease both;">
+  <div style="color:{T3};font-size:.63rem;font-weight:700;text-transform:uppercase;
+              letter-spacing:.1em;margin-bottom:.55rem;display:flex;align-items:center;gap:.35rem;">
+    {'<span style="width:4px;height:4px;border-radius:50%;background:'+CA+';display:inline-block;"></span>' if accent else ''}
+    {label}
+  </div>
+  <div style="color:{T1};font-size:1.7rem;font-weight:900;letter-spacing:-.035em;
+              line-height:1;animation:mf-count .5s ease both;">{value}</div>
   {note_h}
 </div>""", unsafe_allow_html=True)
 
@@ -320,11 +470,17 @@ def chart_wrap_close():
 
 
 def section(title, sub=""):
-    sub_h = f'<div style="color:{T2};font-size:.77rem;margin-top:.15rem;">{sub}</div>' if sub else ""
+    sub_h = (f'<div style="color:{T2};font-size:.78rem;margin-top:.2rem;line-height:1.5;">'
+             f'{sub}</div>') if sub else ""
     st.markdown(f"""
-<div style="margin:1.75rem 0 .9rem;">
-  <span style="color:{T1};font-size:.92rem;font-weight:700;letter-spacing:-.015em;">{title}</span>
-  {sub_h}
+<div style="margin:1.8rem 0 1rem;display:flex;align-items:flex-start;gap:.65rem;">
+  <div style="width:3px;height:100%;min-height:1.4rem;border-radius:2px;
+              background:linear-gradient({CA},{CB});flex-shrink:0;margin-top:.12rem;
+              align-self:stretch;"></div>
+  <div>
+    <span style="color:{T1};font-size:.94rem;font-weight:700;letter-spacing:-.018em;">{title}</span>
+    {sub_h}
+  </div>
 </div>""", unsafe_allow_html=True)
 
 
@@ -332,7 +488,8 @@ def pills(items, arrow="", color=T2):
     html = "".join(
         f'<span style="display:inline-flex;align-items:center;gap:3px;'
         f'background:{S3};border:1px solid {B2};color:{T1};font-size:.77rem;'
-        f'font-weight:500;padding:.26rem .62rem;border-radius:6px;margin:2px 3px 2px 0;">'
+        f'font-weight:500;padding:.26rem .62rem;border-radius:6px;margin:2px 3px 2px 0;'
+        f'transition:border-color .15s;">'
         f'<span style="color:{color};font-size:.65rem;">{arrow}</span>{s}</span>'
         for s in items)
     st.markdown(f'<div style="display:flex;flex-wrap:wrap;padding-top:.25rem;">'
@@ -344,39 +501,57 @@ def row_item(text, indicator="", ind_color=OK):
            f'{indicator}</span>') if indicator else ""
     st.markdown(f"""
 <div style="display:flex;align-items:center;justify-content:space-between;
-            padding:.48rem .8rem;border-radius:8px;margin-bottom:3px;
-            background:{S2};border:1px solid {B1};">
-  <span style="color:{T1};font-size:.82rem;font-weight:500;">{text}</span>
+            padding:.5rem .85rem;border-radius:9px;margin-bottom:3px;
+            background:{S2};border:1px solid {B1};
+            transition:border-color .15s,background .15s;">
+  <span style="color:{T1};font-size:.83rem;font-weight:500;">{text}</span>
   {ind}
 </div>""", unsafe_allow_html=True)
 
 
 def insight(title, body, color=CA):
     st.markdown(f"""
-<div style="background:{S2};border:1px solid {B1};border-left:3px solid {color};
-            border-radius:0 10px 10px 0;padding:.9rem 1rem;margin-bottom:.5rem;">
-  <div style="color:{T1};font-size:.82rem;font-weight:600;margin-bottom:.22rem;">{title}</div>
-  <div style="color:{T2};font-size:.77rem;line-height:1.55;">{body}</div>
+<div style="background:linear-gradient(135deg,{S2},{S1});border:1px solid {B1};
+            border-left:3px solid {color};border-radius:0 12px 12px 0;
+            padding:1rem 1.1rem;margin-bottom:.55rem;
+            box-shadow:0 2px 12px rgba(0,0,0,.2);">
+  <div style="display:flex;align-items:center;gap:.45rem;margin-bottom:.3rem;">
+    <span style="color:{color};font-size:.7rem;">◆</span>
+    <span style="color:{T1};font-size:.84rem;font-weight:600;">{title}</span>
+  </div>
+  <div style="color:{T2};font-size:.79rem;line-height:1.6;padding-left:1.1rem;">{body}</div>
 </div>""", unsafe_allow_html=True)
 
 
 def empty(icon, title, body):
     st.markdown(f"""
-<div style="text-align:center;padding:3rem 2rem;background:{S1};
-            border:1px dashed {B2};border-radius:14px;margin:.5rem 0;">
-  <div style="font-size:1.8rem;margin-bottom:.65rem;">{icon}</div>
-  <div style="color:{T1};font-size:.92rem;font-weight:600;margin-bottom:.35rem;">{title}</div>
-  <div style="color:{T2};font-size:.82rem;max-width:340px;margin:0 auto;line-height:1.6;">{body}</div>
+<div style="text-align:center;padding:3.5rem 2rem;
+            background:radial-gradient(ellipse at center,{S2} 0%,{S1} 100%);
+            border:1px dashed {B2};border-radius:18px;margin:.5rem 0;
+            animation:mf-fadeup .4s ease both;">
+  <div style="font-size:2rem;margin-bottom:.75rem;
+              filter:drop-shadow(0 0 10px rgba(0,198,167,.3));">{icon}</div>
+  <div style="color:{T1};font-size:.95rem;font-weight:700;margin-bottom:.4rem;">{title}</div>
+  <div style="color:{T2};font-size:.83rem;max-width:340px;margin:0 auto;line-height:1.65;">{body}</div>
 </div>""", unsafe_allow_html=True)
 
 
 def action_step(n, text):
     st.markdown(f"""
-<div style="display:flex;gap:.9rem;align-items:flex-start;background:{S2};
-            border:1px solid {B1};border-radius:10px;padding:.8rem 1rem;margin-bottom:.45rem;">
-  <span style="color:{CA};font-size:.72rem;font-weight:700;font-family:'JetBrains Mono',monospace;
-               flex-shrink:0;margin-top:1px;opacity:.75;">0{n}</span>
-  <span style="color:{T1};font-size:.875rem;line-height:1.6;">{text}</span>
+<div style="display:flex;gap:1rem;align-items:flex-start;
+            background:linear-gradient(135deg,{S2},{S1});
+            border:1px solid {B1};border-radius:12px;
+            padding:.9rem 1.1rem;margin-bottom:.5rem;
+            transition:border-color .15s,transform .15s;animation:mf-slide-right .35s ease both;
+            animation-delay:{(n-1)*0.08}s;">
+  <div style="flex-shrink:0;width:26px;height:26px;border-radius:50%;
+              background:linear-gradient(135deg,{CA}22,{CB}22);
+              border:1px solid {CA}44;display:flex;align-items:center;justify-content:center;">
+    <span style="color:{CA};font-size:.68rem;font-weight:800;font-family:'JetBrains Mono',monospace;">
+      {n:02d}
+    </span>
+  </div>
+  <span style="color:{T1};font-size:.875rem;line-height:1.65;">{text}</span>
 </div>""", unsafe_allow_html=True)
 
 
@@ -423,40 +598,51 @@ _fs     = f"{_fh:.0f}h ago" if _fh is not None else "No data"
 with st.sidebar:
     # Brand
     st.markdown(f"""
-<div style="padding:1.55rem 1rem 1.2rem;border-bottom:1px solid {B1};margin-bottom:1rem;">
-  <div style="display:flex;align-items:center;gap:.55rem;">
-    <div style="width:30px;height:30px;flex-shrink:0;
-                background:linear-gradient(135deg,{CA},{CB});border-radius:8px;
-                display:flex;align-items:center;justify-content:center;
-                font-size:.85rem;font-weight:900;color:#021A14;
-                font-family:'JetBrains Mono',monospace;">M</div>
+<div style="padding:1.6rem 1.1rem 1.25rem;border-bottom:1px solid {B1};margin-bottom:.9rem;
+            background:linear-gradient(180deg,rgba(0,198,167,.05) 0%,transparent 100%);">
+  <div style="display:flex;align-items:center;gap:.65rem;">
+    <div style="position:relative;width:36px;height:36px;flex-shrink:0;">
+      <div style="position:absolute;inset:0;border-radius:10px;
+                  background:linear-gradient(135deg,{CA},{CB});
+                  box-shadow:0 4px 14px rgba(0,198,167,.4);"></div>
+      <div style="position:relative;z-index:1;width:100%;height:100%;border-radius:10px;
+                  display:flex;align-items:center;justify-content:center;
+                  font-size:.95rem;font-weight:900;color:#021A14;
+                  font-family:'JetBrains Mono',monospace;">M</div>
+    </div>
     <div>
-      <div style="color:{T1};font-size:.92rem;font-weight:700;letter-spacing:-.02em;
-                  line-height:1.15;">MarketForge AI</div>
-      <div style="color:{T3};font-size:.63rem;font-weight:700;text-transform:uppercase;
-                  letter-spacing:.07em;">UK AI Intelligence</div>
+      <div style="color:{T1};font-size:.94rem;font-weight:800;letter-spacing:-.025em;
+                  line-height:1.2;">MarketForge AI</div>
+      <div style="color:{CA};font-size:.6rem;font-weight:700;text-transform:uppercase;
+                  letter-spacing:.1em;opacity:.8;">UK AI Intelligence</div>
     </div>
   </div>
 </div>""", unsafe_allow_html=True)
 
     # Status card
+    _pulse_anim = "animation:mf-pulse 2s ease-in-out infinite;" if _st == "healthy" else ""
     st.markdown(f"""
-<div style="margin:0 .5rem 1.1rem;padding:.8rem .9rem;background:{S2};
-            border:1px solid {B1};border-radius:10px;">
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem;">
-    <span style="color:{T3};font-size:.62rem;font-weight:700;text-transform:uppercase;
-                 letter-spacing:.08em;">System</span>
-    <span style="display:flex;align-items:center;gap:.3rem;color:{_sc};
-                 font-size:.72rem;font-weight:600;">{_dot(_sc)}&nbsp;{_st.upper()}</span>
+<div style="margin:0 .6rem 1rem;padding:.85rem 1rem;
+            background:linear-gradient(135deg,{S2},{S3});
+            border:1px solid {B1};border-radius:12px;
+            box-shadow:0 2px 12px rgba(0,0,0,.2);">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.6rem;">
+    <span style="color:{T3};font-size:.6rem;font-weight:700;text-transform:uppercase;
+                 letter-spacing:.1em;">System Status</span>
+    <span style="display:flex;align-items:center;gap:.35rem;color:{_sc};font-size:.72rem;font-weight:700;">
+      <span style="width:7px;height:7px;border-radius:50%;background:{_sc};
+                   display:inline-block;box-shadow:0 0 6px {_sc}99;{_pulse_anim}"></span>
+      {_st.upper()}
+    </span>
   </div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:.3rem;">
-    <div style="background:{S1};border-radius:6px;padding:.42rem .5rem;">
-      <div style="color:{T3};font-size:.58rem;text-transform:uppercase;letter-spacing:.06em;">Freshness</div>
-      <div style="color:{_fc};font-size:.77rem;font-weight:600;margin-top:1px;">{_fs}</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:.35rem;">
+    <div style="background:{S1};border-radius:8px;padding:.45rem .6rem;border:1px solid {B1};">
+      <div style="color:{T3};font-size:.56rem;text-transform:uppercase;letter-spacing:.07em;margin-bottom:2px;">Freshness</div>
+      <div style="color:{_fc};font-size:.8rem;font-weight:700;">{_fs}</div>
     </div>
-    <div style="background:{S1};border-radius:6px;padding:.42rem .5rem;">
-      <div style="color:{T3};font-size:.58rem;text-transform:uppercase;letter-spacing:.06em;">Jobs</div>
-      <div style="color:{T1};font-size:.77rem;font-weight:600;margin-top:1px;">{_jobs:,}</div>
+    <div style="background:{S1};border-radius:8px;padding:.45rem .6rem;border:1px solid {B1};">
+      <div style="color:{T3};font-size:.56rem;text-transform:uppercase;letter-spacing:.07em;margin-bottom:2px;">Jobs</div>
+      <div style="color:{T1};font-size:.8rem;font-weight:700;">{_jobs:,}</div>
     </div>
   </div>
 </div>""", unsafe_allow_html=True)
@@ -788,6 +974,125 @@ elif page == "Career Advisor":
     hero("◎", "Career Intelligence",
          "AI-powered gap analysis benchmarked against live UK market data. Processed in-memory — nothing stored.")
 
+    # ── CV Upload (role-aware ATS scoring) ───────────────────────────────────
+    section("CV Analyser", "Upload your CV for ATS scoring and role-specific gap analysis")
+
+    _ROLE_OPTS = [
+        "ML Engineer", "Data Scientist", "AI Engineer", "MLOps Engineer",
+        "NLP Engineer", "Computer Vision Engineer", "Research Scientist",
+        "Applied Scientist", "Data Engineer",
+    ]
+    _ROLE_SLUG = {
+        "ML Engineer": "ml_engineer", "Data Scientist": "data_scientist",
+        "AI Engineer": "ai_engineer", "MLOps Engineer": "mlops_engineer",
+        "NLP Engineer": "nlp_engineer", "Computer Vision Engineer": "computer_vision_engineer",
+        "Research Scientist": "research_scientist", "Applied Scientist": "applied_scientist",
+        "Data Engineer": "data_engineer",
+    }
+
+    with st.form("cv_form"):
+        cv_col, cfg_col = st.columns([5, 4])
+        with cv_col:
+            cv_file = st.file_uploader(
+                "Upload CV (PDF or DOCX, max 5 MB)",
+                type=["pdf", "docx"],
+                help="Your file is processed in-memory and never stored (GDPR compliant).",
+            )
+        with cfg_col:
+            cv_role     = st.selectbox("Target role", _ROLE_OPTS, key="cv_role")
+            cv_consent  = st.checkbox(
+                "I consent to in-memory processing of my CV for analysis purposes",
+                help="Required for GDPR compliance. No data is stored after analysis.",
+            )
+        cv_submitted = st.form_submit_button("Analyse CV →", type="primary")
+
+    if cv_submitted:
+        if not cv_file:
+            st.warning("Please upload a CV file.")
+        elif not cv_consent:
+            st.warning("Please tick the consent checkbox to proceed.")
+        else:
+            with st.spinner("Scanning and scoring your CV against live market data…"):
+                try:
+                    resp = requests.post(
+                        f"{API_BASE}/api/v1/career/cv-analyse",
+                        files={"cv_file": (cv_file.name, cv_file.getvalue(), cv_file.type)},
+                        params={"target_role": _ROLE_SLUG[cv_role], "consent": "true"},
+                        timeout=120,
+                    )
+                    if resp.status_code == 429:
+                        st.warning("Rate limit reached (3 analyses/hour). Please wait."); st.stop()
+                    if resp.status_code == 403:
+                        st.error(resp.json().get("detail", "Consent required.")); st.stop()
+                    if resp.status_code == 422:
+                        st.error(f"Rejected: {resp.json().get('detail')}"); st.stop()
+                    resp.raise_for_status()
+                    cv_report = resp.json()
+                except requests.exceptions.ConnectionError:
+                    st.error("Cannot reach the API. Ensure `uvicorn api.main:app` is running.")
+                    st.stop()
+                except Exception as e:
+                    st.error(f"CV analysis failed: {e}"); st.stop()
+
+            # ── Results ───────────────────────────────────────────────────────
+            ats      = cv_report.get("ats_score", {})
+            total    = ats.get("total", 0)
+            grade    = ats.get("grade", "—")
+            kw_pct   = ats.get("keyword_match_pct", 0)
+            mkt_pct  = cv_report.get("market_match_pct", 0)
+            grade_c  = OK if total >= 70 else (WRN if total >= 50 else ERR)
+
+            st.divider()
+            c1, c2, c3, c4 = st.columns(4)
+            kpi((c1, c2, c3, c4), [
+                ("ATS Score",       f"{total:.0f}/100",  f"Grade {grade}",          True),
+                ("Keyword Match",   f"{kw_pct:.0f}%",    f"vs {cv_role} roles",     False),
+                ("Market Match",    f"{mkt_pct:.0f}%",   "SBERT similarity",        False),
+                ("Skills Found",    str(len(ats.get("skills_found", []))), "on CV", False),
+            ])
+
+            st.markdown("<div style='height:.5rem'></div>", unsafe_allow_html=True)
+
+            ct1, ct2, ct3, ct4 = st.tabs(["ATS Breakdown", "Issues & Tips", "Gap Plan", "Missing Skills"])
+
+            with ct1:
+                section("Score Breakdown")
+                bd = ats.get("breakdown", {})
+                if bd:
+                    df_bd = pd.DataFrame([
+                        {"Dimension": k.replace("_", " ").title(), "Score": f"{v:.0f}/100"}
+                        for k, v in bd.items()
+                    ])
+                    st.dataframe(df_bd, use_container_width=True, hide_index=True)
+
+            with ct2:
+                section("ATS Issues", "Fix these to improve your score")
+                for issue in ats.get("issues", []):
+                    st.markdown(f"- {issue}")
+
+            with ct3:
+                section("Career Gap Plan")
+                narrative = cv_report.get("narrative_summary", "").replace("\n", "<br>")
+                st.markdown(
+                    f'<div style="background:{S1};border:1px solid {B1};border-radius:12px;'
+                    f'padding:1.4rem 1.5rem;color:{T2};font-size:.875rem;line-height:1.8;">'
+                    f'{narrative}</div>', unsafe_allow_html=True)
+                st.markdown("<div style='height:.5rem'></div>", unsafe_allow_html=True)
+                for i, step in enumerate(cv_report.get("action_plan_90d", []), 1):
+                    action_step(i, step)
+
+            with ct4:
+                section("Missing Skills", f"Top skills demanded for {cv_role} roles you don't yet have")
+                missing = cv_report.get("skills_missing", [])
+                if missing:
+                    for sk in missing:
+                        st.markdown(f"- **{sk}**")
+                else:
+                    st.success("Great coverage — no critical skill gaps detected.")
+
+    st.divider()
+    section("Profile Analyser", "Or enter your skills manually for a quick assessment")
+
     with st.form("career_form"):
         cs, cfg = st.columns([5, 4])
         with cs:
@@ -966,6 +1271,12 @@ elif page == "Job Board":
         tbl    = "jobs" if engine.dialect.name == "sqlite" else "market.jobs"
         sk_tbl = "job_skills" if engine.dialect.name == "sqlite" else "market.job_skills"
 
+        is_sqlite = engine.dialect.name == "sqlite"
+        if is_sqlite:
+            skills_agg = f"(SELECT GROUP_CONCAT(skill, ', ') FROM (SELECT skill FROM {sk_tbl} WHERE job_id = j.job_id ORDER BY confidence DESC LIMIT 8))"
+        else:
+            skills_agg = f"(SELECT STRING_AGG(skill, ', ' ORDER BY confidence DESC) FROM (SELECT skill, confidence FROM {sk_tbl} WHERE job_id = j.job_id ORDER BY confidence DESC LIMIT 8) _s)"
+
         with engine.connect() as conn:
             total_indexed = conn.execute(st_text(f"SELECT COUNT(*) FROM {tbl}")).scalar() or 0
 
@@ -974,11 +1285,7 @@ elif page == "Job Board":
                        j.work_model, j.experience_level, j.role_category, j.source,
                        j.offers_sponsorship, j.posted_date, j.scraped_at, j.url,
                        j.is_startup, j.company_stage, j.equity_offered,
-                       COALESCE(
-                           (SELECT STRING_AGG(skill, ', ' ORDER BY confidence DESC)
-                            FROM {sk_tbl} WHERE job_id = j.job_id LIMIT 8),
-                           ''
-                       ) AS skills
+                       COALESCE({skills_agg}, '') AS skills
                 FROM {tbl} j
                 ORDER BY j.scraped_at DESC
                 LIMIT 500
@@ -991,26 +1298,72 @@ elif page == "Job Board":
         empty("⊕", "No jobs indexed yet", "Run the ingestion pipeline first: `python scripts/run_pipeline.py`")
         st.stop()
 
-    # ── Filter bar ────────────────────────────────────────────────────────────
-    fa, fb, fc, fd, fe = st.columns([3, 2, 2, 2, 3])
-    with fa:
-        search_q = st.text_input("Search", placeholder="e.g. LLM, PyTorch, NLP…")
-    with fb:
-        role_opts = ["All roles"] + sorted({j["role_category"] for j in jobs_data if j.get("role_category")})
-        role_f = st.selectbox("Role", role_opts)
-    with fc:
-        wm_opts = ["All modes"] + sorted({j["work_model"] for j in jobs_data if j.get("work_model") and j["work_model"] != "unknown"})
-        wm_f = st.selectbox("Work model", wm_opts)
-    with fd:
-        exp_opts = ["All levels"] + sorted({j["experience_level"] for j in jobs_data if j.get("experience_level")})
-        exp_f = st.selectbox("Level", exp_opts)
-    with fe:
-        src_opts = ["All sources"] + sorted({j["source"] for j in jobs_data if j.get("source")})
-        src_f = st.selectbox("Source", src_opts)
+    # ── Role chip quick-filters ───────────────────────────────────────────────
+    # Chips set session_state["jb_role"] and reset the page to 0
+    ROLE_CHIPS = [
+        ("All",        "All roles"),
+        ("ML Eng",     "ml_engineer"),
+        ("Data Sci",   "data_scientist"),
+        ("AI Eng",     "ai_engineer"),
+        ("MLOps",      "mlops_engineer"),
+        ("NLP",        "nlp_engineer"),
+        ("CV Eng",     "computer_vision_engineer"),
+        ("Research",   "research_scientist"),
+        ("Data Eng",   "data_engineer"),
+    ]
+    # Only show chips for roles that actually have data
+    available_roles = {j["role_category"] for j in jobs_data if j.get("role_category")}
+    visible_chips   = [c for c in ROLE_CHIPS if c[1] == "All roles" or c[1] in available_roles]
 
-    fc2, fd2 = st.columns([3, 5])
-    with fc2:
-        sponsorship_only = st.checkbox("Visa sponsorship only")
+    if "jb_role" not in st.session_state:
+        st.session_state["jb_role"] = "All roles"
+
+    st.markdown('<div style="display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:1rem;">',
+                unsafe_allow_html=True)
+    chip_cols = st.columns(len(visible_chips))
+    for ci, (label, value) in enumerate(visible_chips):
+        is_active = st.session_state["jb_role"] == value
+        css_class = "mf-chip-active" if is_active else "mf-chip-inactive"
+        with chip_cols[ci]:
+            st.markdown(f'<div class="{css_class}">', unsafe_allow_html=True)
+            if st.button(label, key=f"jb_chip_{ci}"):
+                st.session_state["jb_role"] = value
+                st.session_state["jb_page"] = 0
+                st.rerun()
+            st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # ── Filter bar ────────────────────────────────────────────────────────────
+    fa, fb, fc, fd = st.columns([4, 2, 2, 2])
+    with fa:
+        search_q = st.text_input("Search", placeholder="e.g. LLM, PyTorch, NLP, remote…",
+                                 key="jb_search")
+    with fb:
+        wm_opts = ["All modes"] + sorted({
+            j["work_model"] for j in jobs_data
+            if j.get("work_model") and j["work_model"] != "unknown"
+        })
+        wm_f = st.selectbox("Work model", wm_opts, key="jb_wm")
+    with fc:
+        exp_opts = ["All levels"] + sorted({
+            j["experience_level"] for j in jobs_data if j.get("experience_level")
+        })
+        exp_f = st.selectbox("Level", exp_opts, key="jb_exp")
+    with fd:
+        src_opts = ["All sources"] + sorted({j["source"] for j in jobs_data if j.get("source")})
+        src_f = st.selectbox("Source", src_opts, key="jb_src")
+
+    sp_col, _ = st.columns([3, 5])
+    with sp_col:
+        sponsorship_only = st.checkbox("Visa sponsorship only", key="jb_spons")
+
+    # ── Detect filter changes → reset page ───────────────────────────────────
+    _filter_sig = (search_q, st.session_state["jb_role"], wm_f, exp_f, src_f, sponsorship_only)
+    if st.session_state.get("_jb_last_filter") != _filter_sig:
+        st.session_state["_jb_last_filter"] = _filter_sig
+        st.session_state["jb_page"] = 0
+
+    role_f = st.session_state["jb_role"]
 
     # ── Apply filters ─────────────────────────────────────────────────────────
     filtered = jobs_data
@@ -1032,13 +1385,20 @@ elif page == "Job Board":
     if sponsorship_only:
         filtered = [j for j in filtered if j.get("offers_sponsorship")]
 
-    # Summary counts
+    # Active role label for summary
+    active_chip_label = next((lbl for lbl, val in ROLE_CHIPS if val == role_f), role_f)
+
+    _role_badge = (
+        f'<span style="background:{CA}18;border:1px solid {CA}33;color:{CA};'
+        f'font-size:.68rem;font-weight:700;padding:.1rem .45rem;border-radius:20px;">'
+        f'{active_chip_label}</span>'
+    ) if role_f != "All roles" else ""
     st.markdown(
-        f'<div style="display:flex;gap:1.2rem;align-items:center;margin:.6rem 0 1.2rem;">'
-        f'<span style="color:{T1};font-size:.85rem;font-weight:600;">'
-        f'{len(filtered):,} roles shown</span>'
+        f'<div style="display:flex;gap:1rem;align-items:center;margin:.4rem 0 1rem;">'
+        f'<span style="color:{T1};font-size:.87rem;font-weight:700;">{len(filtered):,} roles</span>'
         f'<span style="color:{T3};font-size:.78rem;">of {total_indexed:,} indexed</span>'
-        f'</div>', unsafe_allow_html=True)
+        f'{_role_badge}</div>',
+        unsafe_allow_html=True)
 
     # ── Source badge colours ──────────────────────────────────────────────────
     SOURCE_COLORS = {
@@ -1136,38 +1496,57 @@ elif page == "Job Board":
                                      f'padding:.1rem .4rem;border-radius:4px;margin-left:.3rem;">'
                                      f'EQUITY</span>')
 
-                st.markdown(f"""
-<div style="background:{S1};border:1px solid {B1};border-radius:14px;
-            padding:1.2rem 1.3rem;margin-bottom:.75rem;height:100%;
-            transition:border-color 0.15s;">
-  <!-- header row: source badge + work model -->
-  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.55rem;">
-    <span style="background:{src_c}18;border:1px solid {src_c}33;color:{src_c};
-                 font-size:.62rem;font-weight:800;padding:.12rem .45rem;
-                 border-radius:4px;letter-spacing:.06em;text-transform:uppercase;">{src}</span>
-    <div style="display:flex;align-items:center;gap:.3rem;">
-      {(f'<span style="color:{wm_color};font-size:.62rem;font-weight:700;">{wm_label}</span>') if wm_label else ""}
-      <span style="color:{T3};font-size:.65rem;">{pd_str}</span>
-    </div>
-  </div>
-  <!-- title -->
-  <div style="color:{T1};font-size:.95rem;font-weight:700;letter-spacing:-.015em;
-              line-height:1.3;margin-bottom:.22rem;">{job['title']}{spons_h}{extra_badges}</div>
-  <!-- company + location -->
-  <div style="color:{T2};font-size:.8rem;margin-bottom:.3rem;">
-    <span style="font-weight:600;">{job['company']}</span>
-    <span style="color:{T3};margin:0 .3rem;">·</span>
-    <span>{job.get('location') or '—'}</span>
-  </div>
-  <!-- role category -->
-  {(f'<div style="color:{T3};font-size:.72rem;margin-bottom:.3rem;">{rc}</div>') if rc else ""}
-  <!-- salary -->
-  <div style="color:{sal_col};font-size:.85rem;font-weight:700;letter-spacing:-.01em;">{sal_txt}</div>
-  <!-- skills -->
-  {skills_block}
-  <!-- link -->
-  {link_html}
-</div>""", unsafe_allow_html=True)
+                # Pre-build sub-blocks as single-line strings (no HTML comments, no nested div hoisting)
+                wm_span = (f'<span style="color:{wm_color};font-size:.62rem;font-weight:700;'
+                           f'margin-right:.3rem;">{wm_label}</span>') if wm_label else ""
+                header_row = (
+                    f'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.55rem;">'
+                    f'<span style="background:{src_c}18;border:1px solid {src_c}33;color:{src_c};font-size:.62rem;'
+                    f'font-weight:800;padding:.12rem .45rem;border-radius:4px;letter-spacing:.06em;'
+                    f'text-transform:uppercase;">{src}</span>'
+                    f'<span style="display:inline-flex;align-items:center;">{wm_span}'
+                    f'<span style="color:{T3};font-size:.65rem;">{pd_str}</span></span>'
+                    f'</div>'
+                )
+                title_row = (
+                    f'<div style="color:{T1};font-size:.95rem;font-weight:700;letter-spacing:-.015em;'
+                    f'line-height:1.3;margin-bottom:.22rem;">{job["title"]}{spons_h}{extra_badges}</div>'
+                )
+                company_row = (
+                    f'<div style="color:{T2};font-size:.8rem;margin-bottom:.3rem;">'
+                    f'<span style="font-weight:600;">{job["company"]}</span>'
+                    f'<span style="color:{T3};margin:0 .3rem;">·</span>'
+                    f'<span>{job.get("location") or "—"}</span></div>'
+                )
+                rc_row = (f'<div style="color:{T3};font-size:.72rem;margin-bottom:.3rem;">{rc}</div>') if rc else ""
+                salary_row = (
+                    f'<div style="color:{sal_col};font-size:.85rem;font-weight:700;'
+                    f'letter-spacing:-.01em;margin-top:.1rem;">{sal_txt}</div>'
+                )
+
+                # Company initial avatar
+                co_init = (job.get("company") or "?")[0].upper()
+                co_color = SOURCE_COLORS.get(src, CA)
+                avatar_html = (
+                    f'<div style="width:36px;height:36px;border-radius:10px;flex-shrink:0;'
+                    f'background:linear-gradient(135deg,{co_color}22,{co_color}44);'
+                    f'border:1px solid {co_color}44;display:flex;align-items:center;'
+                    f'justify-content:center;font-size:.9rem;font-weight:800;color:{co_color};'
+                    f'font-family:\'JetBrains Mono\',monospace;">{co_init}</div>'
+                )
+
+                st.markdown(
+                    f'<div class="mf-job-card" style="background:linear-gradient(145deg,{S1},{S2});'
+                    f'border:1px solid {B1};border-radius:16px;'
+                    f'padding:1.25rem 1.35rem;margin-bottom:.8rem;cursor:default;">'
+                    f'{header_row}'
+                    f'<div style="display:flex;gap:.75rem;align-items:flex-start;">'
+                    f'{avatar_html}'
+                    f'<div style="flex:1;min-width:0;">'
+                    f'{title_row}{company_row}{rc_row}'
+                    f'</div></div>'
+                    f'{salary_row}{skills_block}{link_html}</div>',
+                    unsafe_allow_html=True)
 
     # ── Pagination ────────────────────────────────────────────────────────────
     total_pages = max(1, -(-len(filtered) // PAGE_SIZE))
