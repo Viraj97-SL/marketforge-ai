@@ -54,16 +54,30 @@ dependencies = [
     "sqlalchemy>=2.0.0",
     "asyncpg>=0.29.0",
     "psycopg2-binary>=2.9.0",
+    "psycopg[binary]>=3.2.0",              # psycopg3 — required by AsyncPostgresSaver
     "alembic>=1.13.0",
     "chromadb>=0.5.0",
     "redis>=5.0.0",
 
-    # ── Task Queue ────────────────────────────────────────────────────────────
+    # ── LangGraph checkpointing (production) ────────────────────────────────
+    "langgraph-checkpoint-postgres>=2.0.10",
+
+    # ── Task Queue / Scheduling ───────────────────────────────────────────────
     "celery[redis]>=5.3.0",
+    "apscheduler>=3.10.0",
+
+    # ── CV Analysis ───────────────────────────────────────────────────────────
+    "pdfplumber>=0.11.0",
+    "pypdf>=4.0.0",
+    "python-docx>=1.1.0",
+    "python-magic>=0.4.27",
+    "textstat>=0.7.0",
+    "clamd>=1.0.2",
 
     # ── API ──────────────────────────────────────────────────────────────────
     "fastapi>=0.111.0",
     "uvicorn[standard]>=0.29.0",
+    "python-multipart>=0.0.9",
 
     # ── Dashboard ────────────────────────────────────────────────────────────
     "streamlit>=1.35.0",

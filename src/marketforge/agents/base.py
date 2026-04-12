@@ -15,11 +15,18 @@ It is a stateful reasoning entity with:
 Only components that reason about what to do, decide how to do it, and
 evaluate whether they did it well qualify as sub-agents. Single-call
 API wrappers are tools, not agents.
+
+LangGraph integration:
+  Each DeepAgent exposes `as_node()` which returns an async function
+  compatible with StateGraph.add_node().  The returned node function
+  calls the full Plan→Execute→Reflect→Output lifecycle and merges the
+  output dict back into the LangGraph state.
 """
 from __future__ import annotations
 
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from typing import Any
 
 import structlog
@@ -213,3 +220,31 @@ class DeepAgent(ABC):
     def should_escalate(self, state: dict[str, Any], threshold: int = 3) -> bool:
         """True if consecutive failure count exceeds the threshold."""
         return state.get("consecutive_failures", 0) >= threshold
+
+    # ── LangGraph integration ─────────────────────────────────────────────────
+
+    def as_node(self) -> Callable[[dict[str, Any]], Any]:
+        """
+        Return a LangGraph-compatible async node function for this agent.
+
+        The returned coroutine:
+        1. Calls the full Plan → Execute → Reflect → Output lifecycle.
+        2. Returns the output dict as a partial state update.
+
+        Usage in a StateGraph:
+            graph.add_node("my_agent", my_agent_instance.as_node())
+
+        The node function receives the full graph state dict and passes it
+        as the `context` argument to `self.run()`.  The agent's output dict
+        is returned directly and merged into the graph state by LangGraph.
+        """
+        agent_id = self.agent_id
+
+        async def _node(state: dict[str, Any]) -> dict[str, Any]:
+            result = await self.run(state)
+            logger.debug(f"{agent_id}.node.done", keys=list(result.keys()))
+            return result
+
+        _node.__name__     = agent_id
+        _node.__qualname__ = f"DeepAgent.as_node.<{agent_id}>"
+        return _node

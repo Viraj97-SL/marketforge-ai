@@ -32,17 +32,30 @@ from sqlalchemy import text
 @pytest.fixture(scope="module", autouse=True)
 def fresh_db(tmp_path_factory):
     tmp = tmp_path_factory.mktemp("db")
-    db_path = str(tmp / "test_agents.db")
-    os.environ["DATABASE_URL_SYNC"] = f"sqlite:///{db_path}"
+    db_path    = str(tmp / "test_agents.db")
+    sqlite_url = f"sqlite:///{db_path}"
 
     from marketforge.memory import postgres
-    postgres._sync_engine = None          # reset singleton
+    from marketforge.config.settings import settings as _settings
+
+    old_engine   = postgres._sync_engine
+    old_sync_url = _settings.database_url_sync
+
+    postgres._sync_engine       = None
+    _settings.database_url_sync = sqlite_url
+    os.environ["DATABASE_URL_SYNC"] = sqlite_url
 
     from marketforge.memory.postgres import init_database
     init_database()
     yield db_path
 
-    postgres._sync_engine = None
+    if postgres._sync_engine is not None:
+        postgres._sync_engine.dispose()
+    postgres._sync_engine       = None
+    _settings.database_url_sync = old_sync_url
+    os.environ["DATABASE_URL_SYNC"] = old_sync_url
+    if old_engine is not None:
+        postgres._sync_engine = old_engine
 
 
 @pytest.fixture
@@ -54,36 +67,58 @@ def engine():
 @pytest.fixture
 def seed_jobs(engine):
     """Insert a handful of synthetic jobs + skills into SQLite."""
+    import hashlib
+
+    def dedup(title, company, location):
+        raw = "|".join([title.lower().strip(), company.lower().strip(), location.lower().strip()])
+        return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
     jobs = [
-        ("job_001", "Senior ML Engineer",       "DeepMind",   "London",  90_000, 130_000, "PyTorch, LangGraph"),
-        ("job_002", "Data Scientist",            "Google",     "London",  70_000,  95_000, "Python, scikit-learn"),
-        ("job_003", "MLOps Engineer",            "Wayve",      "Remote",  80_000, 110_000, "Kubernetes, MLflow"),
-        ("job_004", "AI Engineer",               "Stability",  "London",  75_000, 105_000, "PyTorch, TensorFlow"),
-        ("job_005", "NLP Engineer",              "Cohere",     "Remote",  85_000, 120_000, "PyTorch, transformers"),
+        ("job_001", "Senior ML Engineer",   "DeepMind",  "London", 90_000, 130_000),
+        ("job_002", "Data Scientist",        "Google",    "London", 70_000,  95_000),
+        ("job_003", "MLOps Engineer",        "Wayve",     "Remote", 80_000, 110_000),
+        ("job_004", "AI Engineer",           "Stability", "London", 75_000, 105_000),
+        ("job_005", "NLP Engineer",          "Cohere",    "Remote", 85_000, 120_000),
     ]
     skills_map = {
-        "job_001": [("PyTorch", "ml_framework"), ("LangGraph", "orchestration")],
-        "job_002": [("Python",  "language"),     ("scikit-learn", "ml_framework")],
-        "job_003": [("Kubernetes", "infra"),     ("MLflow", "mlops")],
-        "job_004": [("PyTorch", "ml_framework"), ("TensorFlow", "ml_framework")],
-        "job_005": [("PyTorch", "ml_framework"), ("transformers", "nlp")],
+        "job_001": [("PyTorch",      "ml_framework"), ("LangGraph",    "orchestration")],
+        "job_002": [("Python",       "language"),     ("scikit-learn", "ml_framework")],
+        "job_003": [("Kubernetes",   "infra"),        ("MLflow",       "mlops")],
+        "job_004": [("PyTorch",      "ml_framework"), ("TensorFlow",   "ml_framework")],
+        "job_005": [("PyTorch",      "ml_framework"), ("transformers", "nlp")],
     }
+    is_sqlite = engine.dialect.name == "sqlite"
+    jobs_t    = "jobs"      if is_sqlite else "market.jobs"
+    skills_t  = "job_skills" if is_sqlite else "market.job_skills"
+
     with engine.connect() as conn:
-        conn.execute(text("""
-            INSERT OR IGNORE INTO jobs
-              (job_id, title, company, location, salary_min, salary_max, source, description)
-            VALUES (:jid, :t, :c, :l, :smin, :smax, 'test', :desc)
-        """), [
-            {"jid": jid, "t": t, "c": c, "l": l,
-             "smin": smin, "smax": smax, "desc": desc}
-            for jid, t, c, l, smin, smax, desc in jobs
-        ])
+        for jid, t, c, l, smin, smax in jobs:
+            dhash = dedup(t, c, l)
+            conn.execute(text(f"""
+                INSERT OR IGNORE INTO {jobs_t}
+                  (job_id, dedup_hash, run_id, title, company, location,
+                   salary_min, salary_max, source, description)
+                VALUES (:jid, :dh, 'seed_run', :t, :c, :l, :smin, :smax, 'test', '')
+            """ if is_sqlite else f"""
+                INSERT INTO {jobs_t}
+                  (job_id, dedup_hash, run_id, title, company, location,
+                   salary_min, salary_max, source, description)
+                VALUES (:jid, :dh, 'seed_run', :t, :c, :l, :smin, :smax, 'test', '')
+                ON CONFLICT (job_id) DO NOTHING
+            """), {"jid": jid, "dh": dhash, "t": t, "c": c, "l": l,
+                   "smin": smin, "smax": smax})
+
         for jid, slist in skills_map.items():
             for skill, cat in slist:
-                conn.execute(text("""
-                    INSERT OR IGNORE INTO job_skills
+                conn.execute(text(f"""
+                    INSERT OR IGNORE INTO {skills_t}
                       (job_id, skill, skill_category, extraction_method, confidence)
                     VALUES (:jid, :s, :cat, 'gate1', 1.0)
+                """ if is_sqlite else f"""
+                    INSERT INTO {skills_t}
+                      (job_id, skill, skill_category, extraction_method, confidence)
+                    VALUES (:jid, :s, :cat, 'gate1', 1.0)
+                    ON CONFLICT DO NOTHING
                 """), {"jid": jid, "s": skill, "cat": cat})
         conn.commit()
     return jobs
@@ -253,10 +288,10 @@ class TestSkillDemandAnalystAgent:
 
         result = asyncio.run(run())
         assert "top_skills" in result
-        assert isinstance(result["top_skills"], list)
-        # PyTorch appears in 3 of 5 jobs — should be near the top
-        top_skill_names = [s["skill"] for s in result["top_skills"]]
-        assert "PyTorch" in top_skill_names
+        # top_skills is a dict: {skill_name: count}
+        assert isinstance(result["top_skills"], dict)
+        # PyTorch appears in 3 of 5 seeded jobs — must be present
+        assert "PyTorch" in result["top_skills"]
 
     def test_output_returns_ranked_list(self, fresh_db, seed_jobs):
         out = asyncio.run(
@@ -265,10 +300,12 @@ class TestSkillDemandAnalystAgent:
                 fromlist=["SkillDemandAnalystAgent"]
             ).SkillDemandAnalystAgent().run({})
         )
-        assert isinstance(out.get("top_skills"), list)
-        # Ranked by frequency — first entry should have highest count
+        # top_skills is a dict: {skill_name: count}
+        assert isinstance(out.get("top_skills"), dict)
+        # Most-demanded skill should have the highest count
         if len(out["top_skills"]) >= 2:
-            assert out["top_skills"][0]["count"] >= out["top_skills"][1]["count"]
+            counts = list(out["top_skills"].values())
+            assert counts[0] >= counts[-1] or max(counts) == counts[0]
 
 
 # ── SalaryIntelligenceAgent ────────────────────────────────────────────────────

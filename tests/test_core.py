@@ -31,12 +31,17 @@ def init_test_db():
     from marketforge.memory.postgres import init_database
     init_database()
     yield
-    # Clean up test DB
+    # Dispose the engine before deleting the file (required on Windows,
+    # where an open file handle causes PermissionError on os.remove).
+    from marketforge.memory import postgres
+    if postgres._sync_engine is not None:
+        postgres._sync_engine.dispose()
+        postgres._sync_engine = None
     import os
     try:
         os.remove("./test_marketforge.db")
-    except FileNotFoundError:
-        pass
+    except (FileNotFoundError, PermissionError):
+        pass  # PermissionError can still occur on Windows if other handles exist
 
 
 @pytest.fixture
@@ -432,15 +437,29 @@ class TestDeduplication:
         assert len(hashes) == len(set(hashes))
 
     @pytest.mark.asyncio
-    async def test_distinct_jobs_kept(self, sample_job, job_without_salary):
+    async def test_distinct_jobs_kept(self):
         from marketforge.agents.data_collection.dedup_agent import DeduplicationCoordinatorAgent
+        from marketforge.models.job import RawJob
+        import uuid
+
+        # Use unique IDs so these jobs are guaranteed not seen by other tests
+        uid = uuid.uuid4().hex[:8]
+        job_a = RawJob(
+            job_id=f"distinct_a_{uid}", title=f"Unique Role A {uid}",
+            company=f"UniqueCo {uid}", location="London",
+            description="PyTorch expert required.", url="https://a.com", source="reed",
+        )
+        job_b = RawJob(
+            job_id=f"distinct_b_{uid}", title=f"Unique Role B {uid}",
+            company=f"OtherCo {uid}", location="Manchester",
+            description="TensorFlow expert required.", url="https://b.com", source="wellfound",
+        )
 
         agent  = DeduplicationCoordinatorAgent()
-        plan   = {"raw_jobs": [sample_job, job_without_salary]}
-        result = await agent.execute(plan, {})
-        # Both distinct jobs should survive
+        result = await agent.execute({"raw_jobs": [job_a, job_b]}, {})
+        # Both distinct jobs have different hashes and are unseen — both should survive
         deduped = result.get("deduplicated", [])
-        assert len(deduped) >= 2   # may be < if cross-run DB already has them
+        assert len(deduped) == 2
 
 
 # ── Connector enrichment tests ────────────────────────────────────────────────

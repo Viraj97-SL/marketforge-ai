@@ -10,6 +10,8 @@ any other project on the same PostgreSQL instance.
 from __future__ import annotations
 
 import json
+import os
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -21,6 +23,49 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from marketforge.config.settings import settings
 
 logger = structlog.get_logger(__name__)
+
+
+# ── LangGraph checkpointer factory ───────────────────────────────────────────
+
+@asynccontextmanager
+async def get_pg_checkpointer():
+    """
+    Async context manager that yields a LangGraph checkpointer.
+
+    Production (Railway): returns AsyncPostgresSaver backed by DATABASE_URL.
+    Local dev / CI:       returns in-memory MemorySaver (zero infrastructure).
+
+    Usage:
+        async with get_pg_checkpointer() as cp:
+            graph = build_my_graph().compile(checkpointer=cp, name="my_graph")
+            await graph.ainvoke(state, config=config)
+    """
+    db_url = os.getenv("DATABASE_URL", settings.database_url)
+    is_postgres = "postgresql" in db_url and "sqlite" not in db_url
+
+    if is_postgres:
+        # AsyncPostgresSaver uses psycopg3 — strip SQLAlchemy driver prefix
+        conn_str = (db_url
+                    .replace("postgresql+asyncpg://", "postgresql://")
+                    .replace("postgresql+psycopg2://", "postgresql://")
+                    .replace("postgresql+psycopg://", "postgresql://")
+                    .replace("postgres://", "postgresql://"))
+        try:
+            from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+            async with AsyncPostgresSaver.from_conn_string(conn_str) as checkpointer:
+                await checkpointer.setup()   # idempotent: creates checkpoint tables
+                logger.info("langgraph.checkpointer", backend="postgres")
+                yield checkpointer
+                return
+        except Exception as exc:
+            logger.warning("langgraph.checkpointer.postgres_failed", error=str(exc),
+                           fallback="memory")
+
+    # Fallback: in-memory (dev / CI / Railway before DB is ready)
+    from langgraph.checkpoint.memory import MemorySaver
+    logger.info("langgraph.checkpointer", backend="memory")
+    yield MemorySaver()
+
 
 # ── Engine singletons ─────────────────────────────────────────────────────────
 _async_engine: AsyncEngine | None = None
@@ -395,11 +440,21 @@ class DedupStore:
         self._table = "seen_jobs" if self._is_sqlite else "market.seen_jobs"
 
     def is_seen(self, dedup_hash: str) -> bool:
+        from marketforge.config.settings import settings
+        ttl = settings.pipeline.dedup_hash_ttl_days
         with self._engine.connect() as conn:
-            row = conn.execute(
-                text(f"SELECT 1 FROM {self._table} WHERE dedup_hash = :h"),
-                {"h": dedup_hash},
-            ).fetchone()
+            if self._is_sqlite:
+                row = conn.execute(
+                    text(f"SELECT 1 FROM {self._table} WHERE dedup_hash = :h"
+                         f" AND datetime(last_seen) > datetime('now', :ttl)"),
+                    {"h": dedup_hash, "ttl": f"-{ttl} days"},
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    text(f"SELECT 1 FROM {self._table} WHERE dedup_hash = :h"
+                         f" AND last_seen > NOW() - INTERVAL '{ttl} days'"),
+                    {"h": dedup_hash},
+                ).fetchone()
         return row is not None
 
     def mark_seen(self, dedup_hash: str, job_id: str, title: str, company: str, source: str) -> None:
@@ -424,7 +479,7 @@ class DedupStore:
             conn.commit()
 
     def filter_new(self, jobs: list) -> list:
-        """Return only unseen jobs, marking all as seen atomically."""
+        """Return only unseen (or TTL-expired) jobs, marking all as seen atomically."""
         new = []
         for job in jobs:
             if not self.is_seen(job.dedup_hash):
@@ -532,13 +587,13 @@ class JobStore:
                      salary_min, salary_max, work_model, experience_level,
                      role_category, industry, company_stage, is_startup,
                      offers_sponsorship, citizens_only, degree_required,
-                     url, source, posted_date, scraped_at)
+                     equity_offered, url, source, posted_date, scraped_at)
                 VALUES
                     (:job_id, :dedup_hash, :run_id, :title, :description, :company, :location,
                      :salary_min, :salary_max, :work_model, :experience_level,
                      :role_category, :industry, :company_stage, :is_startup,
                      :offers_sponsorship, :citizens_only, :degree_required,
-                     :url, :source, :posted_date, :scraped_at)
+                     :equity_offered, :url, :source, :posted_date, :scraped_at)
                 ON CONFLICT(job_id) DO NOTHING
             """), {
                 "job_id": j.job_id, "dedup_hash": j.dedup_hash, "run_id": run_id,
@@ -550,6 +605,7 @@ class JobStore:
                 "is_startup": int(j.is_startup) if self._is_sqlite else j.is_startup,
                 "offers_sponsorship": j.offers_sponsorship,
                 "citizens_only": j.citizens_only, "degree_required": j.degree_required,
+                "equity_offered": int(j.equity_offered) if (self._is_sqlite and j.equity_offered is not None) else j.equity_offered,
                 "url": j.url or None,
                 "source": j.source,
                 "posted_date": j.posted_date.isoformat() if j.posted_date else None,

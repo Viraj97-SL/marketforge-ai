@@ -192,18 +192,34 @@ def sqlite_settings(tmp_path):
 
 @pytest.fixture
 def fresh_db(tmp_path):
-    """Create a fresh SQLite database for each test."""
+    """Create a fresh SQLite database for each test, fully isolated."""
     db_path = str(tmp_path / "test_market.db")
-    # Override the module-level engine singleton
+    sqlite_url = f"sqlite:///{db_path}"
+
     from marketforge.memory import postgres
-    old_engine = postgres._sync_engine
-    postgres._sync_engine = None
-    os.environ["DATABASE_URL_SYNC"] = f"sqlite:///{db_path}"
+    from marketforge.config.settings import settings as _settings
+
+    # Save old state
+    old_engine     = postgres._sync_engine
+    old_sync_url   = _settings.database_url_sync
+
+    # Reset engine and patch settings singleton so get_sync_engine()
+    # creates a fresh engine pointing at the tmp SQLite file
+    postgres._sync_engine        = None
+    _settings.database_url_sync  = sqlite_url
+    os.environ["DATABASE_URL_SYNC"] = sqlite_url
+
     from marketforge.memory.postgres import init_database
     init_database()
     yield db_path
-    postgres._sync_engine = None
-    if old_engine:
+
+    # Teardown — dispose tmp engine and restore previous state
+    if postgres._sync_engine is not None:
+        postgres._sync_engine.dispose()
+    postgres._sync_engine        = None
+    _settings.database_url_sync  = old_sync_url
+    os.environ["DATABASE_URL_SYNC"] = old_sync_url
+    if old_engine is not None:
         postgres._sync_engine = old_engine
 
 
@@ -435,3 +451,164 @@ class TestDeduplicationAgent:
         deduped = result.get("deduped_jobs", [])
         # Should remove at least the exact duplicate
         assert len(deduped) < len(jobs)
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Regression tests for bugs fixed 2026-04-07
+# ────────────────────────────────────────────────────────────────────────────
+
+class TestDedupStoreTTL:
+    """DedupStore.is_seen() must respect the dedup_hash_ttl_days setting."""
+
+    def test_fresh_hash_is_seen(self, fresh_db):
+        from marketforge.memory.postgres import DedupStore
+        store = DedupStore()
+        store.mark_seen("ttl_hash_001", "job_001", "ML Engineer", "DeepMind", "reed")
+        # Should still be seen immediately after marking
+        assert store.is_seen("ttl_hash_001") is True
+
+    def test_unseen_hash_not_seen(self, fresh_db):
+        from marketforge.memory.postgres import DedupStore
+        store = DedupStore()
+        assert store.is_seen("ttl_hash_never_marked") is False
+
+    def test_filter_new_respects_ttl_window(self, fresh_db):
+        """Jobs marked seen within TTL window must not be re-admitted."""
+        from marketforge.memory.postgres import DedupStore
+        from marketforge.models.job import RawJob
+        from sqlalchemy import text
+
+        store = DedupStore()
+        job = RawJob(
+            job_id="ttl_job_001", title="NLP Engineer", company="Cohere",
+            location="London", description="d", url="u", source="reed",
+        )
+
+        # First pass — new job
+        new1 = store.filter_new([job])
+        assert len(new1) == 1
+
+        # Second pass — same job within TTL must be blocked
+        new2 = store.filter_new([job])
+        assert len(new2) == 0
+
+    def test_expired_hash_re_admitted(self, fresh_db):
+        """Jobs whose last_seen is older than TTL must be re-admitted."""
+        from marketforge.memory.postgres import DedupStore
+        from marketforge.models.job import RawJob
+        from sqlalchemy import text
+
+        store = DedupStore()
+        job = RawJob(
+            job_id="ttl_job_expired", title="Expired Job", company="OldCo",
+            location="London", description="d", url="u", source="reed",
+        )
+        # Mark as seen but backdated beyond the 30-day TTL
+        store.mark_seen(job.dedup_hash, job.job_id, job.title, job.company, job.source)
+
+        # Manually backdate last_seen to 31 days ago
+        engine = store._engine
+        t = store._table
+        with engine.connect() as conn:
+            if store._is_sqlite:
+                conn.execute(
+                    text(f"UPDATE {t} SET last_seen = datetime('now', '-31 days') WHERE dedup_hash = :h"),
+                    {"h": job.dedup_hash},
+                )
+            else:
+                conn.execute(
+                    text(f"UPDATE {t} SET last_seen = NOW() - INTERVAL '31 days' WHERE dedup_hash = :h"),
+                    {"h": job.dedup_hash},
+                )
+            conn.commit()
+
+        # Now is_seen should return False (expired)
+        assert store.is_seen(job.dedup_hash) is False
+
+        # And filter_new should re-admit it
+        readmitted = store.filter_new([job])
+        assert len(readmitted) == 1
+
+
+class TestPIIScrubbingFalsePositives:
+    """PIIScrubbingAgent must not reject valid tech skill lists."""
+
+    @pytest.mark.asyncio
+    async def test_tech_skills_not_rejected(self):
+        """Technology names like PyTorch/FastAPI must not trigger PII rejection."""
+        from marketforge.agents.security.lead_agent import PIIScrubbingAgent
+        agent = PIIScrubbingAgent()
+        result = await agent.run(
+            {"text": "Python, PyTorch, FastAPI, LangChain, Docker",
+             "source": "user_input", "mode": "reject"}
+        )
+        assert result.get("accepted") is True, (
+            f"Clean skill list was rejected: {result.get('pii_found')}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_email_still_rejected_in_reject_mode(self):
+        """Emails must still be caught in reject mode."""
+        from marketforge.agents.security.lead_agent import PIIScrubbingAgent
+        agent = PIIScrubbingAgent()
+        result = await agent.run(
+            {"text": "Contact me at viraj@example.com",
+             "source": "user_input", "mode": "reject"}
+        )
+        assert result.get("accepted") is False
+
+    @pytest.mark.asyncio
+    async def test_person_name_still_scrubbed_in_scrub_mode(self):
+        """Person names in job text must still be redacted in scrub mode."""
+        from marketforge.agents.security.lead_agent import PIIScrubbingAgent
+        agent = PIIScrubbingAgent()
+        result = await agent.run(
+            {"text": "Contact John Smith at recruiter@bigcorp.com",
+             "source": "reed", "mode": "scrub"}
+        )
+        assert "[REDACTED:EMAIL]" in result.get("scrubbed_text", "")
+
+    @pytest.mark.asyncio
+    async def test_validate_user_input_accepts_clean_skills(self):
+        """End-to-end: validate_user_input must accept a clean skills dict."""
+        from marketforge.agents.security.lead_agent import validate_user_input
+        ok, sanitised, reason = await validate_user_input(
+            {"skills": "Python, PyTorch, FastAPI", "target_role": "ML Engineer"}
+        )
+        assert ok is True, f"Clean input rejected. reason={reason}"
+        assert reason is None
+
+
+class TestUpsertJobEquityField:
+    """upsert_job must persist the equity_offered field."""
+
+    def test_equity_offered_written_and_readable(self, fresh_db):
+        from marketforge.memory.postgres import JobStore, get_sync_engine
+        from marketforge.models.job import RawJob
+        from sqlalchemy import text
+
+        store = JobStore()
+        job = RawJob(
+            job_id="equity_test_001",
+            title="AI Engineer",
+            company="StartupCo",
+            location="London",
+            description="We offer equity.",
+            url="https://startupco.com/jobs/1",
+            source="wellfound",
+            equity_offered=True,
+        )
+        store.upsert_job(job, "test_run_001")
+
+        engine  = get_sync_engine()
+        is_sqlite = engine.dialect.name == "sqlite"
+        tbl = "jobs" if is_sqlite else "market.jobs"
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(f"SELECT equity_offered FROM {tbl} WHERE job_id = :jid"),
+                {"jid": job.job_id},
+            ).fetchone()
+
+        assert row is not None, "Job was not written to DB"
+        # SQLite stores BOOLEAN as 0/1; PostgreSQL as True/False
+        assert bool(row[0]) is True
