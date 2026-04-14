@@ -99,7 +99,7 @@ async def detect_injection(state: SecurityState) -> dict:
             flagged_patterns.append(pattern.pattern[:60])
 
     score   = min(len(flagged_patterns) / 3.0, 1.0)
-    flagged = score >= 0.34   # one or more patterns = flag
+    flagged = len(flagged_patterns) >= 1  # one or more patterns = flag
 
     if flagged:
         logger.warning(

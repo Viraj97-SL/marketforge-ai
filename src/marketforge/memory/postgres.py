@@ -19,6 +19,7 @@ import structlog
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.pool import NullPool, StaticPool
 
 from marketforge.config.settings import settings
 
@@ -75,24 +76,42 @@ _sync_engine:  Engine      | None = None
 def get_async_engine() -> AsyncEngine:
     global _async_engine
     if _async_engine is None:
-        _async_engine = create_async_engine(
-            settings.database_url,
-            pool_pre_ping=True,
-            pool_size=5,
-            max_overflow=10,
-        )
+        url = settings.database_url
+        if "sqlite" in url:
+            # aiosqlite requires StaticPool for shared in-memory use; NullPool for file-backed
+            _async_engine = create_async_engine(
+                url,
+                connect_args={"check_same_thread": False},
+                poolclass=StaticPool,
+            )
+        else:
+            _async_engine = create_async_engine(
+                url,
+                pool_pre_ping=True,
+                pool_size=5,
+                max_overflow=10,
+            )
     return _async_engine
 
 
 def get_sync_engine() -> Engine:
     global _sync_engine
     if _sync_engine is None:
-        _sync_engine = create_engine(
-            settings.database_url_sync,
-            pool_pre_ping=True,
-            pool_size=5,
-            max_overflow=10,
-        )
+        url = settings.database_url_sync
+        if "sqlite" in url:
+            # SQLite does not support pool_size / max_overflow — use NullPool
+            _sync_engine = create_engine(
+                url,
+                connect_args={"check_same_thread": False},
+                poolclass=NullPool,
+            )
+        else:
+            _sync_engine = create_engine(
+                url,
+                pool_pre_ping=True,
+                pool_size=5,
+                max_overflow=10,
+            )
     return _sync_engine
 
 

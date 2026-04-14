@@ -3,17 +3,20 @@
 
 # ── FastAPI (web service) ──────────────────────────────────────────────────────
 [build]
-builder = "nixpacks"
+builder = "dockerfile"
 
 [deploy]
 startCommand = "uvicorn api.main:app --host 0.0.0.0 --port $PORT"
 healthcheckPath = "/api/v1/health"
-healthcheckTimeout = 30
+healthcheckTimeout = 120
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 5
 
 # Environment variables set in Railway dashboard (never commit):
 # DATABASE_URL          — auto-set by Railway PostgreSQL addon
+# DATABASE_URL_SYNC     — REQUIRED: same host/db as DATABASE_URL but use
+#                         postgresql+psycopg2:// prefix (Railway does not set this
+#                         automatically; derive it from DATABASE_URL and set manually)
 # REDIS_URL             — auto-set by Railway Redis addon
 # GEMINI_API_KEY        — Google AI Studio
 # LANGCHAIN_API_KEY     — LangSmith

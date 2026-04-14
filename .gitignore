@@ -43,3 +43,6 @@ Thumbs.db
 
 # Mypy
 .mypy_cache/
+
+# LangGraph local dev server state (binary checkpoints, never commit)
+.langgraph_api/

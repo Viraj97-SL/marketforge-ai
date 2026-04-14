@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # ── Path constants ────────────────────────────────────────────────────────────
@@ -126,6 +126,26 @@ class Settings(BaseSettings):
             if v.startswith("postgresql://"):
                 v = "postgresql+psycopg2://" + v[len("postgresql://"):]
         return v
+
+    @model_validator(mode="after")
+    def derive_sync_url_from_async(self) -> "Settings":
+        """
+        If DATABASE_URL_SYNC was not explicitly provided and database_url is
+        PostgreSQL, derive the sync URL automatically so both engines hit the
+        same database on Railway (which only auto-sets DATABASE_URL).
+        """
+        sqlite_default = f"sqlite:///{DATA_DIR / 'marketforge.db'}"
+        if (
+            self.database_url_sync == sqlite_default
+            and "postgresql" in self.database_url
+        ):
+            sync_url = (
+                self.database_url
+                .replace("postgresql+asyncpg://", "postgresql+psycopg2://")
+                .replace("postgresql+psycopg://", "postgresql+psycopg2://")
+            )
+            self.database_url_sync = sync_url
+        return self
 
     @property
     def is_production(self) -> bool:

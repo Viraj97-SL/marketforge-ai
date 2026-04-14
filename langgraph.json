@@ -1,0 +1,16 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "master_pipeline":     "./src/marketforge/agents/graphs/master.py:master_graph",
+    "data_collection":     "./src/marketforge/agents/graphs/data_collection.py:data_collection_graph",
+    "market_analysis":     "./src/marketforge/agents/graphs/market_analysis.py:market_analysis_graph",
+    "ml_engineering":      "./src/marketforge/agents/graphs/ml_engineering.py:ml_engineering_graph",
+    "research":            "./src/marketforge/agents/graphs/research.py:research_graph",
+    "content_studio":      "./src/marketforge/agents/graphs/content_studio.py:content_studio_graph",
+    "user_insights":       "./src/marketforge/agents/graphs/user_insights.py:user_insights_graph",
+    "qa_testing":          "./src/marketforge/agents/graphs/qa_testing.py:qa_graph",
+    "security":            "./src/marketforge/agents/graphs/security.py:security_graph",
+    "ops_monitor":         "./src/marketforge/agents/graphs/ops_monitor.py:ops_graph"
+  },
+  "env": ".env"
+}
