@@ -561,10 +561,11 @@ class ModelDriftDetectionAgent(DeepAgent):
         drift_report: dict[str, dict] = {}
 
         # Load recent feature distributions
+        date_filter = "datetime('now', '-7 days')" if is_sqlite else "NOW() - INTERVAL '7 days'"
         with engine.connect() as conn:
             rows = conn.execute(text(f"""
                 SELECT feature_json FROM {feats_t}
-                WHERE computed_at >= {'datetime(\'now\', \'-7 days\')' if is_sqlite else "NOW() - INTERVAL '7 days'"}
+                WHERE computed_at >= {date_filter}
                 LIMIT 500
             """)).fetchall()
 
