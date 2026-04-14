@@ -47,3 +47,6 @@ Thumbs.db
 # Secrets
 .env
 *.env
+
+# Local dev scripts
+sync-repos.sh

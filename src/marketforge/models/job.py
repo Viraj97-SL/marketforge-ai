@@ -194,10 +194,14 @@ class PipelineRun(BaseModel):
     completed_at:  datetime | None = None
     status:        Literal["running", "success", "partial", "failed"] = "running"
 
-    jobs_scraped:  int   = 0
-    jobs_new:      int   = 0
-    llm_cost_usd:  float = 0.0
-    metadata:      dict  = Field(default_factory=dict)
+    jobs_scraped:       int        = 0
+    jobs_new:           int        = 0
+    jobs_deduplicated:  int        = 0   # how many were filtered out as dupes
+    jobs_enriched:      int        = 0   # how many had NLP skills extracted
+    llm_cost_usd:       float      = 0.0
+    sources_used:       list[str]  = Field(default_factory=list)   # connector names that ran
+    errors:             list[dict] = Field(default_factory=list)   # non-fatal errors captured
+    metadata:           dict       = Field(default_factory=dict)
 
 
 class AgentRunState(BaseModel):
