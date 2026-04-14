@@ -1,6 +1,6 @@
 """
 MarketForge AI — Agent lifecycle and department-level tests.
-
+#XFGSDFHFDHGFH
 Covers:
   - DeepAgent Plan→Execute→Reflect→Output lifecycle
   - CostTrackerAgent  (Dept 9, no LLM)
