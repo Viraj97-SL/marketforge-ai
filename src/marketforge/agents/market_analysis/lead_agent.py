@@ -107,6 +107,22 @@ class SkillDemandAnalystAgent(DeepAgent):
         curr_map = {r[0]: r[1] for r in curr_rows}
         prev_map = {r[0]: r[1] for r in prev_rows}
 
+        # If no data for this week, fall back to last 30 days so the chart is
+        # never blank just because the scraper ran mid-week.
+        if not curr_map:
+            thirty_ago = str(date.fromisoformat(week) - timedelta(days=30))
+            with engine.connect() as conn:
+                fallback_rows = conn.execute(text(f"""
+                    SELECT js.skill, COUNT(*) as cnt
+                    FROM {_t('job_skills')} js
+                    JOIN {_t('jobs')} j ON j.job_id = js.job_id
+                    WHERE j.scraped_at >= :since
+                    GROUP BY js.skill
+                    ORDER BY cnt DESC
+                    LIMIT 50
+                """), {"since": thirty_ago}).fetchall()
+            curr_map = {r[0]: r[1] for r in fallback_rows}
+
         # Build per-role top-skills dict: {role_category: {skill: count}}
         role_skills: dict[str, dict[str, int]] = {}
         for role, skill, cnt in role_rows:
@@ -212,20 +228,31 @@ class SalaryIntelligenceAgent(DeepAgent):
         from sqlalchemy import text
         week = plan["week_start"]
         engine = _engine()
+        # Try current week → 30 days → 90 days until we have ≥5 salary rows
+        windows = [
+            week,
+            str(date.fromisoformat(week) - timedelta(days=30)),
+            str(date.fromisoformat(week) - timedelta(days=90)),
+        ]
 
-        with engine.connect() as conn:
-            rows = conn.execute(text(f"""
-                SELECT salary_min, salary_max, role_category, experience_level
-                FROM {_t('jobs')}
-                WHERE scraped_at >= :since
-                  AND (salary_min IS NOT NULL OR salary_max IS NOT NULL)
-                  AND salary_min > 10000
-                  AND (salary_max IS NULL OR salary_max < 600000)
-            """), {"since": week}).fetchall()
+        rows = []
+        total_jobs = 1
+        for since in windows:
+            with engine.connect() as conn:
+                rows = conn.execute(text(f"""
+                    SELECT salary_min, salary_max, role_category, experience_level
+                    FROM {_t('jobs')}
+                    WHERE scraped_at >= :since
+                      AND (salary_min IS NOT NULL OR salary_max IS NOT NULL)
+                      AND salary_min > 10000
+                      AND (salary_max IS NULL OR salary_max < 600000)
+                """), {"since": since}).fetchall()
 
-            total_jobs = conn.execute(text(f"""
-                SELECT COUNT(*) FROM {_t('jobs')} WHERE scraped_at >= :since
-            """), {"since": week}).scalar() or 1
+                total_jobs = conn.execute(text(f"""
+                    SELECT COUNT(*) FROM {_t('jobs')} WHERE scraped_at >= :since
+                """), {"since": since}).scalar() or 1
+            if len(rows) >= 5:
+                break
 
         # Compute midpoints
         midpoints = []
@@ -471,14 +498,26 @@ class HiringVelocityAgent(DeepAgent):
         zero_set = plan["zero_companies"]
         expansions = [co for co in w0 if co in zero_set and w0[co] > 0]
 
-        # Role category velocity
+        # Role category velocity — include uncategorized jobs so job_count is
+        # never 0 just because NLP hasn't classified every role yet.
         with engine.connect() as conn:
             rc_rows = conn.execute(text(f"""
-                SELECT role_category, COUNT(*) FROM {_t('jobs')}
-                WHERE scraped_at >= :since AND role_category IS NOT NULL
-                GROUP BY role_category
+                SELECT COALESCE(role_category, 'other'), COUNT(*) FROM {_t('jobs')}
+                WHERE scraped_at >= :since
+                GROUP BY COALESCE(role_category, 'other')
             """), {"since": week}).fetchall()
         role_velocity = {r[0]: r[1] for r in rc_rows}
+
+        # Fallback: if nothing scraped this week, use the last 30 days
+        if not role_velocity:
+            thirty_ago = str(date.fromisoformat(week) - timedelta(days=30))
+            with engine.connect() as conn:
+                rc_rows = conn.execute(text(f"""
+                    SELECT COALESCE(role_category, 'other'), COUNT(*) FROM {_t('jobs')}
+                    WHERE scraped_at >= :since
+                    GROUP BY COALESCE(role_category, 'other')
+                """), {"since": thirty_ago}).fetchall()
+            role_velocity = {r[0]: r[1] for r in rc_rows}
 
         return {
             "top_companies_by_momentum": top_companies,
@@ -955,13 +994,28 @@ class MarketAnalystLeadAgent(DeepAgent):
         cooc_out         = _safe(cooc_out,        {})
         fingerprint_out  = _safe(fingerprint_out, {})
 
-        # Count actual jobs for this week
+        # job_count: use velocity agent's role_velocity sum (already has 30-day fallback).
+        # If still 0, fall back to direct COUNT with 30-day window, then 90-day, then all-time.
+        # This ensures the dashboard never shows 0 just because the scraper ran before week_start.
         from sqlalchemy import text as _text
-        with _engine().connect() as _conn:
-            actual_job_count = _conn.execute(
-                _text(f"SELECT COUNT(*) FROM {_t('jobs')} WHERE scraped_at >= :w"),
-                {"w": week},
-            ).scalar() or 0
+        role_velocity = velocity_out.get("role_velocity", {})
+        actual_job_count = sum(role_velocity.values()) if role_velocity else 0
+
+        if actual_job_count == 0:
+            for days_back in (30, 90, None):
+                with _engine().connect() as _conn:
+                    if days_back is not None:
+                        since = str(date.fromisoformat(week) - timedelta(days=days_back))
+                        actual_job_count = _conn.execute(
+                            _text(f"SELECT COUNT(*) FROM {_t('jobs')} WHERE scraped_at >= :w"),
+                            {"w": since},
+                        ).scalar() or 0
+                    else:
+                        actual_job_count = _conn.execute(
+                            _text(f"SELECT COUNT(*) FROM {_t('jobs')}"),
+                        ).scalar() or 0
+                if actual_job_count > 0:
+                    break
 
         # Merge into one snapshot dict
         snapshot = {

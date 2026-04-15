@@ -167,14 +167,45 @@ class ATSDirectDeepAgent(DeepAgent):
     agent_id   = "ats_direct_v1"
     department = "data_collection"
 
-    _GH_TOKENS = ["deepmind", "wayve", "graphcore", "polyai", "tractable",
-                  "synthesia", "speechmatics", "exscientia", "darktrace",
-                  "thoughtmachine", "quantexa", "luminance", "physicsx",
-                  "facultyai", "elevenlabs", "oxa", "conjecture", "gradient-labs"]
-    _LV_SLUGS  = ["cleo", "monzo", "faculty-ai", "tractable", "poly-ai",
-                  "wayve", "luminance", "elevenlabs", "physicsx", "oxa"]
-    _ASH_SLUGS = ["wayve", "polyai", "tractable", "luminance", "conjecture",
-                  "apollo-research", "granola", "metaview"]
+    # ── Greenhouse tokens ─────────────────────────────────────────────────────
+    # boards.greenhouse.io/{token}/jobs
+    _GH_TOKENS = [
+        # Established UK AI leaders
+        "deepmind", "wayve", "graphcore", "polyai", "tractable",
+        "synthesia", "speechmatics", "exscientia", "darktrace",
+        "thoughtmachine", "quantexa", "luminance", "physicsx",
+        "facultyai", "elevenlabs", "oxa", "conjecture", "gradient-labs",
+        # Newly added UK AI/ML startups — confirmed Greenhouse
+        "featurespace",   # Cambridge — ML fraud/anomaly detection
+        "seldon",         # London — MLOps / model deployment
+        "healx",          # Cambridge — AI drug discovery
+        "mindfoundry",    # Oxford — AI decision intelligence
+    ]
+
+    # ── Lever slugs ───────────────────────────────────────────────────────────
+    # api.lever.co/v0/postings/{slug}
+    _LV_SLUGS  = [
+        "cleo", "monzo", "faculty-ai", "tractable", "poly-ai",
+        "wayve", "luminance", "elevenlabs", "physicsx", "oxa",
+    ]
+
+    # ── Ashby slugs ───────────────────────────────────────────────────────────
+    # jobs.ashbyhq.com/{slug}
+    _ASH_SLUGS = [
+        # Existing
+        "wayve", "polyai", "tractable", "luminance", "conjecture",
+        "apollo-research", "granola", "metaview",
+        # Newly added UK AI/ML startups — confirmed Ashby
+        "incident",       # incident.io — London, Series B, incident management AI
+        "v7labs.com",     # V7 Labs — London, Series B, AI data platform / CV annotation
+        "poolside",       # Poolside AI — London, Series A, AI coding assistant
+        "Reka",           # Reka AI — London, Series B, multimodal LLM (ex-DeepMind/Google Brain)
+        "signal-ai",      # Signal AI — London, Series C, NLP media monitoring
+        "cohere",         # Cohere — London engineering hub, enterprise LLM
+        "causaly",        # Causaly — London, Series A, biomedical NLP/AI
+        "Synthesia",      # Synthesia — London, Series D, AI video generation (confirmed Ashby)
+        "faculty",        # Faculty AI — London, Series B (confirmed Ashby)
+    ]
 
     _AI_KEYWORDS = {"machine learning","ml engineer","ai engineer","data scientist",
                     "llm","nlp","computer vision","deep learning","pytorch","mlops",
@@ -198,9 +229,9 @@ class ATSDirectDeepAgent(DeepAgent):
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True,
                                      headers={"User-Agent": "Mozilla/5.0 JobMarketBot/1.0"}) as client:
             # Greenhouse
-            gh_tasks = [self._fetch_greenhouse(client, t) for t in plan["gh_tokens"][:20]]
+            gh_tasks = [self._fetch_greenhouse(client, t) for t in plan["gh_tokens"][:25]]
             gh_results = await asyncio.gather(*gh_tasks, return_exceptions=True)
-            for token, result in zip(plan["gh_tokens"][:20], gh_results):
+            for token, result in zip(plan["gh_tokens"][:25], gh_results):
                 if isinstance(result, list):
                     relevant = [j for j in result if self._is_ai_role(j)]
                     all_jobs.extend(relevant)
@@ -214,6 +245,15 @@ class ATSDirectDeepAgent(DeepAgent):
                     relevant = [j for j in result if self._is_ai_role(j)]
                     all_jobs.extend(relevant)
                     yield_map[f"lv:{slug}"] = len(relevant)
+
+            # Ashby — jobs.ashbyhq.com/{slug}/jobs (public JSON API)
+            ash_tasks = [self._fetch_ashby(client, s) for s in plan["ash_slugs"][:20]]
+            ash_results = await asyncio.gather(*ash_tasks, return_exceptions=True)
+            for slug, result in zip(plan["ash_slugs"][:20], ash_results):
+                if isinstance(result, list):
+                    relevant = [j for j in result if self._is_ai_role(j)]
+                    all_jobs.extend(relevant)
+                    yield_map[f"ash:{slug}"] = len(relevant)
 
         return {"jobs": all_jobs, "yield_map": yield_map}
 
@@ -257,6 +297,42 @@ class ATSDirectDeepAgent(DeepAgent):
             title=p.get("text",""), company=slug.replace("-"," ").title(),
             location=p.get("workplaceType","") or "UK",
             description=desc[:8000], url=p.get("hostedUrl",""),
+            source="ats_direct", is_startup=True,
+        )
+
+    async def _fetch_ashby(self, client: httpx.AsyncClient, slug: str) -> list[RawJob]:
+        """Fetch jobs from Ashby ATS public JSON API."""
+        try:
+            resp = await client.post(
+                "https://api.ashbyhq.com/posting-api/job-board",
+                json={"organizationHostedJobsPageName": slug},
+                headers={"Content-Type": "application/json"},
+                timeout=12.0,
+            )
+            if resp.status_code != 200:
+                return []
+            data = resp.json()
+            jobs = data.get("jobs", [])
+            return [self._parse_ashby(j, slug) for j in jobs if j]
+        except Exception:
+            return []
+
+    def _parse_ashby(self, j: dict, slug: str) -> RawJob:
+        loc = j.get("location", "") or "UK"
+        dept = j.get("department", "")
+        desc = j.get("descriptionHtml", j.get("description", "")) or ""
+        # Strip HTML tags from description
+        desc = re.sub(r"<[^>]+>", " ", desc)
+        company_name = (
+            j.get("organizationName")
+            or slug.replace("-", " ").replace(".", " ").title()
+        )
+        return RawJob(
+            job_id=f"ash_{j.get('id', hash(j.get('jobUrl','')) & 0xFFFFFFFF)}",
+            title=j.get("title", ""), company=company_name,
+            location=loc if isinstance(loc, str) else "UK",
+            description=f"{dept} {desc}"[:8000],
+            url=j.get("jobUrl", f"https://jobs.ashbyhq.com/{slug}"),
             source="ats_direct", is_startup=True,
         )
 
@@ -317,13 +393,66 @@ class CareerPagesDeepCrawlerAgent(DeepAgent):
         "data engineer","applied scientist","generative ai",
     })
 
+    # Static seed list of UK AI/ML startups — always crawled even on first run
+    # when the DB watchlist is empty.  FundingNewsAgent adds more over time.
+    _SEED_COMPANIES: list[dict] = [
+        # ── Series C+ / unicorns ──────────────────────────────────────────────
+        {"company": "Wayve",           "careers_url": "https://wayve.ai/careers",                    "stage": "series_c"},
+        {"company": "Synthesia",       "careers_url": "https://www.synthesia.io/careers",             "stage": "series_d_plus"},
+        {"company": "Tractable",       "careers_url": "https://tractable.ai/careers",                "stage": "series_d_plus"},
+        {"company": "PolyAI",          "careers_url": "https://poly.ai/careers",                     "stage": "series_c"},
+        {"company": "Quantexa",        "careers_url": "https://www.quantexa.com/careers",             "stage": "series_d_plus"},
+        {"company": "ElevenLabs",      "careers_url": "https://elevenlabs.io/careers",               "stage": "series_c"},
+        {"company": "Darktrace",       "careers_url": "https://www.darktrace.com/careers",            "stage": "public"},
+        {"company": "Graphcore",       "careers_url": "https://www.graphcore.ai/careers",             "stage": "series_e"},
+        {"company": "Exscientia",      "careers_url": "https://www.exscientia.ai/careers",            "stage": "public"},
+        {"company": "Thought Machine", "careers_url": "https://thoughtmachine.net/careers",           "stage": "series_d_plus"},
+        {"company": "Cohere",          "careers_url": "https://cohere.com/careers",                  "stage": "series_c"},
+        # ── Series B ──────────────────────────────────────────────────────────
+        {"company": "incident.io",     "careers_url": "https://incident.io/careers",                 "stage": "series_b"},
+        {"company": "V7 Labs",         "careers_url": "https://www.v7labs.com/careers",              "stage": "series_b"},
+        {"company": "PhysicsX",        "careers_url": "https://www.physicsx.ai/careers",             "stage": "series_b"},
+        {"company": "Featurespace",    "careers_url": "https://www.featurespace.com/careers",        "stage": "series_d_plus"},
+        {"company": "Speechmatics",    "careers_url": "https://www.speechmatics.com/company/careers","stage": "series_b"},
+        {"company": "Luminance",       "careers_url": "https://www.luminance.com/careers",           "stage": "series_b"},
+        {"company": "Oxa",             "careers_url": "https://oxa.tech/careers",                    "stage": "series_b"},
+        {"company": "Healx",           "careers_url": "https://healx.io/about/careers",              "stage": "series_b"},
+        {"company": "BenevolentAI",    "careers_url": "https://benevolent.ai/careers",               "stage": "series_c"},
+        {"company": "Reka AI",         "careers_url": "https://reka.ai/careers",                     "stage": "series_b"},
+        {"company": "Monolith AI",     "careers_url": "https://www.monolith.ai/careers",             "stage": "series_b"},
+        {"company": "Signal AI",       "careers_url": "https://www.signal-ai.com/careers",           "stage": "series_c"},
+        {"company": "Mind Foundry",    "careers_url": "https://mindfoundry.ai/careers",              "stage": "series_b"},
+        {"company": "Seldon",          "careers_url": "https://www.seldon.io/careers",               "stage": "series_b"},
+        {"company": "Stability AI",    "careers_url": "https://stability.ai/careers",                "stage": "series_c"},
+        # ── Series A / seed ───────────────────────────────────────────────────
+        {"company": "Poolside AI",     "careers_url": "https://www.poolside.ai/careers",             "stage": "series_a"},
+        {"company": "Humanloop",       "careers_url": "https://humanloop.com/careers",               "stage": "series_a"},
+        {"company": "Causaly",         "careers_url": "https://www.causaly.com/careers",             "stage": "series_a"},
+        {"company": "Faculty AI",      "careers_url": "https://faculty.ai/careers",                  "stage": "series_b"},
+        {"company": "Conjecture",      "careers_url": "https://conjecture.dev/careers",              "stage": "seed"},
+        {"company": "Apollo Research", "careers_url": "https://apolloresearch.ai/careers",           "stage": "seed"},
+        {"company": "Gradient Labs",   "careers_url": "https://www.gradientlabs.ai/careers",         "stage": "seed"},
+        # ── Fintech / consumer AI ─────────────────────────────────────────────
+        {"company": "Cleo",            "careers_url": "https://web.meetcleo.com/careers",            "stage": "series_c"},
+        {"company": "Monzo",           "careers_url": "https://monzo.com/careers",                   "stage": "growth"},
+    ]
+
     async def plan(self, context: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
-        adaptive   = state.get("adaptive_params", {})
+        adaptive     = state.get("adaptive_params", {})
         strategy_log = adaptive.get("parse_strategy_log", {})
-        watchlist  = context.get("watchlist", [])
+        db_watchlist = context.get("watchlist", [])
+
+        # Merge DB-discovered companies with the static seed list.
+        # Seed companies act as the baseline; FundingNewsAgent adds more over time.
+        seen = {c["company"].lower() for c in db_watchlist}
+        combined = list(db_watchlist)
+        for co in self._SEED_COMPANIES:
+            if co["company"].lower() not in seen:
+                combined.append(co)
+
         # Sort: companies with recent yield first
         last_yields = adaptive.get("company_yields", {})
-        sorted_wl = sorted(watchlist, key=lambda c: -last_yields.get(c["company"], 0))
+        sorted_wl = sorted(combined, key=lambda c: -last_yields.get(c["company"], 0))
         return {"watchlist": sorted_wl[:80], "strategy_log": strategy_log, "adaptive": adaptive}
 
     async def execute(self, plan: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:

@@ -49,3 +49,6 @@ Thumbs.db
 
 # Local dev scripts (not part of the library)
 sync-repos.sh
+
+# Claude Code private context — never commit
+CLAUDE.md

@@ -181,7 +181,19 @@ class DataCollectionLeadAgent(DeepAgent):
             removed=dedup_report.get("removed", 0),
         )
 
-        # ── Write to database ─────────────────────────────────────────────────
+        # ── Refresh scraped_at for ALL jobs seen this run ─────────────────────
+        # Re-scraped jobs (same dedup_hash, filtered out above) still exist in
+        # market.jobs with a stale scraped_at from their first scrape run.
+        # Touching scraped_at ensures market analysis queries (scraped_at >= week_start)
+        # count all currently-live jobs, not just first-seen jobs.
+        all_raw_job_ids = [j.job_id for j in all_raw]
+        try:
+            touched = self._job_store.touch_scraped_at(all_raw_job_ids)
+            logger.info(f"{self.agent_id}.touch_scraped_at", touched=touched, total_raw=len(all_raw_job_ids))
+        except Exception as exc:
+            logger.warning(f"{self.agent_id}.touch_scraped_at_failed", error=str(exc))
+
+        # ── Write new jobs to database ────────────────────────────────────────
         write_errors = 0
         for job in deduped_jobs:
             try:

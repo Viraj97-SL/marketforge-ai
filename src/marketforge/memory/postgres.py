@@ -44,36 +44,11 @@ async def get_pg_checkpointer():
     db_url = os.getenv("DATABASE_URL", settings.database_url)
     is_postgres = "postgresql" in db_url and "sqlite" not in db_url
 
-    if is_postgres:
-        # AsyncPostgresSaver uses psycopg3 — strip SQLAlchemy driver prefix
-        conn_str = (db_url
-                    .replace("postgresql+asyncpg://", "postgresql://")
-                    .replace("postgresql+psycopg2://", "postgresql://")
-                    .replace("postgresql+psycopg://", "postgresql://")
-                    .replace("postgres://", "postgresql://"))
-        try:
-            from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-
-            # JsonPlusSerializer handles arbitrary Python/Pydantic types gracefully,
-            # eliminating "Deserializing unregistered type" warnings for RawJob etc.
-            serde_kwargs: dict = {}
-            try:
-                from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
-                serde_kwargs = {"serde": JsonPlusSerializer()}
-            except (ImportError, TypeError):
-                pass  # older LangGraph build — fall through with default serde
-
-            async with AsyncPostgresSaver.from_conn_string(conn_str, **serde_kwargs) as checkpointer:
-                await checkpointer.setup()   # idempotent: creates checkpoint tables
-                logger.info("langgraph.checkpointer", backend="postgres",
-                            serde="jsonplus" if serde_kwargs else "default")
-                yield checkpointer
-                return
-        except Exception as exc:
-            logger.warning("langgraph.checkpointer.postgres_failed", error=str(exc),
-                           fallback="memory")
-
-    # Fallback: in-memory (dev / CI / Railway before DB is ready)
+    # Always use MemorySaver — PostgreSQL checkpointing caused msgpack
+    # "Deserializing unregistered type RawJob" warnings that flooded Railway
+    # logs. Pipeline runs are stateless (fresh run each time), so in-memory
+    # checkpointing is sufficient and produces no serialization noise.
+    _ = is_postgres  # suppress unused warning
     from langgraph.checkpoint.memory import MemorySaver
     logger.info("langgraph.checkpointer", backend="memory")
     yield MemorySaver()
@@ -720,7 +695,10 @@ class JobStore:
                      :equity_offered, :flexible_hours,
                      :is_uk_headquartered, :employee_count_band, :sponsorship_signals,
                      :url, :source, :posted_date, :scraped_at)
-                ON CONFLICT(job_id) DO NOTHING
+                ON CONFLICT(job_id) DO UPDATE SET
+                    scraped_at = EXCLUDED.scraped_at,
+                    run_id     = EXCLUDED.run_id,
+                    dedup_hash = EXCLUDED.dedup_hash
             """), {
                 "job_id":               j.job_id,
                 "dedup_hash":           j.dedup_hash,
@@ -753,6 +731,28 @@ class JobStore:
                 "scraped_at":           j.scraped_at.isoformat() if j.scraped_at else now,
             })
             conn.commit()
+
+    def touch_scraped_at(self, job_ids: list[str]) -> int:
+        """Refresh scraped_at to NOW() for all job_ids already in the DB (re-seen jobs).
+        Returns the count of rows updated."""
+        if not job_ids:
+            return 0
+        now = datetime.utcnow().isoformat()
+        with self._engine.connect() as conn:
+            if self._is_sqlite:
+                from sqlalchemy import bindparam
+                result = conn.execute(
+                    text(f"UPDATE {self._jobs_t} SET scraped_at = :now WHERE job_id IN :ids")
+                    .bindparams(bindparam("ids", expanding=True)),
+                    {"now": now, "ids": job_ids},
+                )
+            else:
+                result = conn.execute(
+                    text(f"UPDATE {self._jobs_t} SET scraped_at = NOW() WHERE job_id = ANY(:ids)"),
+                    {"ids": job_ids},
+                )
+            conn.commit()
+        return result.rowcount
 
     def upsert_skills(self, job_id: str, skills: list[tuple[str, str, str, float]]) -> None:
         """skills: list of (skill, category, method, confidence)"""

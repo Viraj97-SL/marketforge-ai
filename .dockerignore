@@ -50,3 +50,6 @@ Thumbs.db
 
 # Local dev scripts
 sync-repos.sh
+
+# Claude Code private context — never deploy
+CLAUDE.md
