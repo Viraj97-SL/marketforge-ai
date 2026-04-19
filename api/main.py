@@ -16,6 +16,8 @@ All endpoints are rate-limited via Redis.
 """
 from __future__ import annotations
 
+import asyncio
+import os
 import time
 from contextlib import asynccontextmanager
 from typing import Annotated, Any
@@ -31,6 +33,7 @@ from marketforge.config.settings import settings
 from marketforge.memory.postgres import init_database
 from marketforge.memory.redis_cache import DashboardCache, RateLimiter
 from marketforge.utils.logger import setup_logging
+from api.security import SecurityMiddleware
 
 logger  = structlog.get_logger(__name__)
 cache   = DashboardCache()
@@ -69,19 +72,34 @@ app = FastAPI(
     redoc_url=None,
 )
 
+_ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()] or ["*"]
+
+app.add_middleware(SecurityMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_ALLOWED_ORIGINS,
     allow_methods=["GET", "POST"],
-    allow_headers=["*"],
+    allow_headers=["Content-Type", "Authorization"],
+    allow_credentials=False,
 )
+
+
+# ── IP extraction utility ─────────────────────────────────────────────────────
+
+def _get_client_ip(request: Request) -> str:
+    """Railway appends the real client IP as the rightmost X-Forwarded-For entry."""
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        parts = [p.strip() for p in forwarded.split(",") if p.strip()]
+        return parts[-1] if parts else "unknown"
+    return request.client.host if request.client else "unknown"
 
 
 # ── Rate limit middleware ─────────────────────────────────────────────────────
 
 @app.middleware("http")
 async def rate_limit_middleware(request: Request, call_next):
-    ip  = request.client.host if request.client else "unknown"
+    ip  = _get_client_ip(request)
     path = request.url.path
 
     # CV analyse has its own per-endpoint limiter (3/hour) — skip middleware check
@@ -151,10 +169,10 @@ class HealthResponse(BaseModel):
     description="Analyses your profile against current market data. No data is persisted.",
 )
 async def analyse_career(profile: UserProfile, request: Request) -> CareerIntelligenceReport:
-    ip = request.client.host if request.client else None
+    ip = _get_client_ip(request)
 
     # ── Security gate ─────────────────────────────────────────────────────────
-    all_text = " ".join(profile.skills) + " " + (profile.free_text or "")
+    all_text = " ".join(profile.skills) + " " + profile.target_role + " " + (profile.free_text or "")
     sec_result = validate_input(all_text, field_name="profile", source_ip=ip)
     if not sec_result.allowed:
         raise HTTPException(
@@ -165,16 +183,16 @@ async def analyse_career(profile: UserProfile, request: Request) -> CareerIntell
     skills_text = sec_result.sanitised_text
 
     # ── Market match via SBERT + ChromaDB ────────────────────────────────────
-    match_pct, match_dist = _compute_market_match(profile.skills, profile.target_role)
+    match_pct, match_dist = await asyncio.to_thread(_compute_market_match, profile.skills, profile.target_role)
 
     # ── Skill gap analysis ────────────────────────────────────────────────────
-    skill_gaps = _compute_skill_gaps(profile.skills, profile.target_role)
+    skill_gaps            = await asyncio.to_thread(_compute_skill_gaps, profile.skills, profile.target_role)
 
     # ── Sector fit ────────────────────────────────────────────────────────────
     sector_fit = _compute_sector_fit(profile.skills)
 
     # ── Salary expectation ────────────────────────────────────────────────────
-    salary_exp = _fetch_salary_expectation(profile.target_role, profile.experience_level, profile.location)
+    salary_exp = await asyncio.to_thread(_fetch_salary_expectation, profile.target_role, profile.experience_level, profile.location)
 
     # ── LLM narrative synthesis ───────────────────────────────────────────────
     narrative, action_plan = await _generate_career_narrative(profile, match_pct, skill_gaps, sector_fit, salary_exp)
@@ -705,7 +723,7 @@ async def get_jobs(
 async def health() -> HealthResponse:
     from marketforge.memory.postgres import get_sync_engine
     from sqlalchemy import text
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     engine    = get_sync_engine()
     is_sqlite = engine.dialect.name == "sqlite"
@@ -724,7 +742,7 @@ async def health() -> HealthResponse:
         try:
             if isinstance(last_run, str):
                 last_run = datetime.fromisoformat(last_run)
-            freshness = round((datetime.utcnow() - last_run.replace(tzinfo=None)).total_seconds() / 3600, 1)
+            freshness = round((datetime.now(timezone.utc) - last_run.replace(tzinfo=timezone.utc)).total_seconds() / 3600, 1)
         except Exception:
             pass
 
@@ -791,11 +809,17 @@ async def analyse_cv(
     from marketforge.cv.ats_scorer import score_cv
     from marketforge.cv.gdpr     import build_gdpr_context, ConsentNotGiven
 
-    ip = request.client.host if request.client else "unknown"
+    ip = _get_client_ip(request)
 
     # ── Rate limit: 3 CV analyses per IP per hour (expensive operation) ────────
     if not limiter.is_allowed(f"cv_analyse:{ip}", limit=3, window_seconds=3600):
         raise HTTPException(status_code=429, detail="CV analysis rate limit exceeded (3/hour)")
+
+    # ── Validate target_role against injection ────────────────────────────────
+    role_check = validate_input(target_role, field_name="target_role", source_ip=ip, max_length=100)
+    if not role_check.allowed:
+        raise HTTPException(status_code=422, detail=role_check.rejection_reason)
+    target_role = role_check.sanitised_text
 
     # ── GDPR consent gate ─────────────────────────────────────────────────────
     if not consent:
@@ -832,14 +856,14 @@ async def analyse_cv(
     del raw_bytes   # discard original bytes
 
     # ── ATS scoring ────────────────────────────────────────────────────────────
-    ats = score_cv(cv, target_role)
+    ats = await asyncio.to_thread(score_cv, cv, target_role)
 
     # ── Market match (SBERT) ───────────────────────────────────────────────────
-    match_pct, _ = _compute_market_match(ats.skills_found or [target_role], target_role)
+    match_pct, _ = await asyncio.to_thread(_compute_market_match, ats.skills_found or [target_role], target_role)
 
     # ── Phase 2: ML gap analysis (demand × salary × recency priority scoring) ──
     from marketforge.cv.gap_analyser import analyse_gaps
-    ml_gaps     = analyse_gaps(ats.skills_found, target_role, top_n=15)
+    ml_gaps = await asyncio.to_thread(analyse_gaps, ats.skills_found, target_role, top_n=15)
     # ML-ranked missing skills (flat list for display, ordered by priority)
     skills_missing = [g.skill for g in ml_gaps.top_n(10)]
     # If DB has no market data yet fall back to simple heuristic
@@ -1020,9 +1044,14 @@ Keep actions specific and achievable. Do not mention company names."""
 # ── Prometheus metrics ────────────────────────────────────────────────────────
 
 @app.get("/metrics", response_class=PlainTextResponse, include_in_schema=False)
-async def metrics() -> str:
+async def metrics(request: Request) -> str:
+    token = os.getenv("METRICS_TOKEN", "")
+    if token:
+        auth = request.headers.get("Authorization", "")
+        if auth != f"Bearer {token}":
+            return PlainTextResponse("Forbidden", status_code=403)
     try:
-        from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+        from prometheus_client import generate_latest
         return generate_latest().decode("utf-8")
     except Exception:
         return "# prometheus_client not available\n"

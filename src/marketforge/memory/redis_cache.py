@@ -37,6 +37,11 @@ def get_redis():
     global _redis_client
     if _redis_client is None:
         _redis_client = _get_client()
+    else:
+        try:
+            _redis_client.ping()
+        except Exception:
+            _redis_client = _get_client()
     return _redis_client
 
 
@@ -191,7 +196,7 @@ class RateLimiter:
                 pipe.zadd(window_key, {str(now): now})
                 pipe.expire(window_key, window_seconds)
                 _, count, *_ = pipe.execute()
-                return int(count) <= limit
+                return int(count) < limit
             except Exception:
                 pass
         # Fallback: in-process sliding window
@@ -235,8 +240,12 @@ class DashboardCache:
             return
         try:
             pattern = f"market:dashboard:{prefix}*"
-            keys = r.keys(pattern)
-            if keys:
-                r.delete(*keys)
+            cursor = 0
+            while True:
+                cursor, keys = r.scan(cursor, match=pattern, count=100)
+                if keys:
+                    r.delete(*keys)
+                if cursor == 0:
+                    break
         except Exception:
             pass
