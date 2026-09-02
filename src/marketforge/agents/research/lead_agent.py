@@ -419,3 +419,70 @@ class ResearchLeadAgent(DeepAgent):
             "emerging_signals":   result.get("signals", {}).get("emerging_signals", []),
             "confirmed_adoptions":result.get("signals", {}).get("confirmed_adoptions", []),
         }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# External Stats Lead Agent — real government/statistics-office data
+# ══════════════════════════════════════════════════════════════════════════════
+
+class ExternalStatsLeadAgent(DeepAgent):
+    """
+    Orchestrates the three external trusted-source ingestion agents:
+    ONS vacancy trend, GOV.UK sponsor register, ONS ASHE salary benchmark.
+
+    Runs on its own monthly schedule (worker.py `external_stats` job) —
+    separate from the twice-weekly scrape cadence, since these sources
+    update far less often. Sub-agents are individually fault-tolerant
+    (see their own docstrings); this lead agent just fans them out and
+    reports the aggregate outcome.
+    """
+
+    agent_id   = "external_stats_lead_v1"
+    department = "research"
+
+    def __init__(self) -> None:
+        from marketforge.agents.research.ons_vacancy_agent import OnsVacancyTrendAgent
+        from marketforge.agents.research.sponsor_register_agent import SponsorRegisterAgent
+        from marketforge.agents.research.ashe_salary_agent import AsheSalaryAgent
+
+        self._ons_vacancy   = OnsVacancyTrendAgent()
+        self._sponsor       = SponsorRegisterAgent()
+        self._ashe          = AsheSalaryAgent()
+
+    async def plan(self, context: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+        return {"adaptive": state.get("adaptive_params", {})}
+
+    async def execute(self, plan: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+        import asyncio
+        ons_out, sponsor_out, ashe_out = await asyncio.gather(
+            self._ons_vacancy.run({}),
+            self._sponsor.run({}),
+            self._ashe.run({}),
+            return_exceptions=True,
+        )
+        for _var in (ons_out, sponsor_out, ashe_out):
+            if isinstance(_var, Exception):
+                logger.warning("external_stats_lead.sub_agent_error", error=str(_var))
+
+        def _safe(val): return val if not isinstance(val, Exception) else {}
+        return {"ons": _safe(ons_out), "sponsor": _safe(sponsor_out), "ashe": _safe(ashe_out)}
+
+    async def reflect(
+        self, plan: dict[str, Any], result: dict[str, Any], state: dict[str, Any]
+    ) -> dict[str, Any]:
+        qualities = [
+            result.get("ons", {}).get("quality"),
+            result.get("sponsor", {}).get("quality"),
+            result.get("ashe", {}).get("quality"),
+        ]
+        quality = "poor" if all(q in (None, "poor") for q in qualities) else "good"
+        state["last_yield"] = sum(1 for q in qualities if q not in (None, "poor"))
+        return {"quality": quality, "notes": f"sub_agent_qualities={qualities}"}
+
+    async def output(self, result: dict[str, Any], reflection: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "ons_vacancy_rows":        result.get("ons", {}).get("ons_vacancy_rows", 0),
+            "sponsor_matches_updated": result.get("sponsor", {}).get("sponsor_matches_updated", 0),
+            "ashe_benchmark_updated":  result.get("ashe", {}).get("ashe_benchmark_updated", False),
+            "quality":                 reflection.get("quality"),
+        }
