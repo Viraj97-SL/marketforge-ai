@@ -168,6 +168,24 @@ class TestMarketSnapshotEndpoint:
         assert resp.status_code == 404
 
 
+class TestSnapshotHistoryEndpoint:
+    def test_returns_200_and_role_category_all(self, client):
+        resp = client.get("/api/v1/market/snapshot-history")
+        assert resp.status_code == 200
+        assert resp.json()["role_category"] == "all"
+
+    def test_includes_seeded_week(self, client):
+        data = client.get("/api/v1/market/snapshot-history?weeks=5").json()
+        assert len(data["weeks"]) >= 1
+        row = data["weeks"][-1]
+        assert row["job_count"] == 2
+        assert row["salary_p50"] == 95000
+
+    def test_weeks_param_out_of_range_is_rejected(self, client):
+        resp = client.get("/api/v1/market/snapshot-history?weeks=999")
+        assert resp.status_code == 422
+
+
 # ── /api/v1/market/skills ──────────────────────────────────────────────────────
 
 class TestMarketSkillsEndpoint:

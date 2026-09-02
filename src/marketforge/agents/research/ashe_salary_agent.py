@@ -15,14 +15,18 @@ the ONS itself publishes. Fabricating a more granular mapping would be worse
 than this admitted approximation.
 
 ASHE publishes annually (each autumn) and is distributed as a spreadsheet,
-not a clean API — the dataset page is scraped for its current .xlsx link,
-which is the most fragile step in this pipeline (see risk notes in the
-market-story implementation plan). Any parse failure leaves prior rows
+not a clean API. Every release on the dataset page is a .zip archive (no
+direct .xlsx link exists) containing the actual workbook, so this agent
+downloads the most recent .zip link and extracts the first .xlsx member —
+the most fragile step in this pipeline (see risk notes in the market-story
+implementation plan; an earlier version of this agent assumed a direct
+.xlsx link and 404'd in production). Any parse failure leaves prior rows
 untouched rather than blanking the benchmark table.
 """
 from __future__ import annotations
 
 import re
+import zipfile
 from datetime import date, datetime
 from io import BytesIO
 from typing import Any
@@ -39,7 +43,7 @@ _DATASET_PAGE = (
     "https://www.ons.gov.uk/employmentandlabourmarket/peopleinwork/"
     "earningsandworkinghours/datasets/occupation4digitsoc2010ashetable14"
 )
-_XLSX_LINK_RE = re.compile(r'href="([^"]+\.xlsx)"', re.IGNORECASE)
+_ZIP_LINK_RE = re.compile(r'href="([^"]+\.zip)"', re.IGNORECASE)
 
 _SOC_CODE  = "2134"
 _SOC_TITLE = "Programmers and software development professionals"
@@ -66,11 +70,11 @@ class AsheSalaryAgent(DeepAgent):
                for the current calendar year, unless adaptive state has no
                successful fetch on record yet.
 
-    execute(): Locates the current .xlsx via the dataset page HTML, downloads
-               it, and scans for the SOC 2134 row using a header-search
-               rather than a hardcoded row/column index (ASHE table layout
-               shifts slightly release to release). Returns {} on any
-               failure.
+    execute(): Locates the most recent .zip via the dataset page HTML,
+               downloads it, extracts the first .xlsx member, and scans for
+               the SOC 2134 row using a header-search rather than a
+               hardcoded row/column index (ASHE table layout shifts
+               slightly release to release). Returns {} on any failure.
 
     reflect(): "poor" if nothing was parsed — this is expected to fire rarely
                (annual cadence) and loudly enough to prompt a manual check.
@@ -106,28 +110,52 @@ class AsheSalaryAgent(DeepAgent):
 
         try:
             async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-                page_resp = await client.get(f"{_DATASET_PAGE}/current")
+                page_resp = await client.get(_DATASET_PAGE)
                 page_resp.raise_for_status()
-                xlsx_url = self._find_xlsx_url(page_resp.text)
-                if not xlsx_url:
-                    logger.warning(f"{self.agent_id}.execute.no_xlsx_link")
-                    return {"benchmark": None}
+                zip_url = self._find_zip_url(page_resp.text)
+                if not zip_url:
+                    logger.warning(f"{self.agent_id}.execute.no_zip_link")
+                    return {"benchmark": None, "year": plan["year"]}
 
-                xlsx_resp = await client.get(xlsx_url)
-                xlsx_resp.raise_for_status()
-                benchmark = self._parse_workbook(xlsx_resp.content)
+                zip_resp = await client.get(zip_url)
+                zip_resp.raise_for_status()
+                xlsx_bytes = self._extract_xlsx(zip_resp.content)
+                if not xlsx_bytes:
+                    logger.warning(f"{self.agent_id}.execute.no_xlsx_in_zip")
+                    return {"benchmark": None, "year": plan["year"]}
+                benchmark = self._parse_workbook(xlsx_bytes)
         except Exception as exc:
             logger.warning(f"{self.agent_id}.execute.fetch_error", error=str(exc))
             return {"benchmark": None, "year": plan["year"]}
 
         return {"benchmark": benchmark, "year": plan["year"]}
 
-    def _find_xlsx_url(self, html: str) -> str | None:
-        matches = _XLSX_LINK_RE.findall(html)
+    def _find_zip_url(self, html: str) -> str | None:
+        matches = _ZIP_LINK_RE.findall(html)
         for m in matches:
             if "table14" in m.lower() or re.search(r"\btable ?14\b", m.lower()):
                 return self._absolute(m)
         return self._absolute(matches[0]) if matches else None
+
+    @staticmethod
+    def _extract_xlsx(zip_bytes: bytes) -> bytes | None:
+        """
+        The zip bundles ~20 workbooks — one per pay/hours measure (weekly
+        pay, hourly pay, paid hours worked, annual pay, each with a
+        companion "CV" quality-indicator file). We need specifically the
+        "Annual pay - Gross" values workbook, not its CV companion or any
+        of the other measures — grabbing "the first .xlsx in the zip" was
+        an earlier bug that silently stored a "paid hours worked" figure
+        (~35-38) as if it were an annual salary.
+        """
+        with zipfile.ZipFile(BytesIO(zip_bytes)) as zf:
+            candidates = [
+                n for n in zf.namelist()
+                if "annual pay - gross" in n.lower() and not n.lower().endswith("cv.xlsx")
+            ]
+            if candidates:
+                return zf.read(candidates[0])
+        return None
 
     @staticmethod
     def _absolute(url: str) -> str:
@@ -139,9 +167,12 @@ class AsheSalaryAgent(DeepAgent):
         import pandas as pd
 
         wb = pd.ExcelFile(BytesIO(raw))
-        # ASHE table sheets are usually named "All" / "Full-Time" — scan all
-        # sheets since the exact name varies by release.
-        for sheet_name in wb.sheet_names:
+        # Prefer the "All" sheet explicitly (all employees, not the Male/
+        # Female/Full-Time/Part-Time breakdowns) — fall back to scanning
+        # every sheet only if "All" isn't present under that exact name.
+        sheet_order = [s for s in wb.sheet_names if s.strip().lower() == "all"]
+        sheet_order += [s for s in wb.sheet_names if s not in sheet_order]
+        for sheet_name in sheet_order:
             df = wb.parse(sheet_name, header=None)
             hit = self._scan_sheet_for_soc(df)
             if hit:

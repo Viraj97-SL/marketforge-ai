@@ -272,6 +272,7 @@ class TestAsheSalaryAgent:
     def test_parses_workbook_and_persists_all_role_categories(self, fresh_db, engine, monkeypatch):
         import httpx
         import pandas as pd
+        import zipfile
         from io import BytesIO
         from marketforge.agents.research.ashe_salary_agent import AsheSalaryAgent, _SOC_CODE, _ROLE_CATEGORIES
 
@@ -284,12 +285,23 @@ class TestAsheSalaryAgent:
             ["SOC", "Description", "25%", "Median", "75%"],
             [_SOC_CODE, "Programmers and software development professionals", 42000, 58000, 79000],
         ])
-        buf = BytesIO()
-        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        xlsx_buf = BytesIO()
+        with pd.ExcelWriter(xlsx_buf, engine="openpyxl") as writer:
             df.to_excel(writer, sheet_name="All", header=False, index=False)
-        xlsx_bytes = buf.getvalue()
 
-        html = '<a href="/file?uri=/datasets/table14/current/table14.xlsx">Download</a>'
+        # ONS only ever publishes .zip archives for this dataset — no direct
+        # .xlsx link — and the zip bundles ~20 workbooks, one per pay/hours
+        # measure plus CV companions. The fake mirrors that shape (including
+        # a decoy "Paid hours worked" file that would produce wrong results
+        # if _extract_xlsx regressed to "take the first .xlsx in the zip").
+        zip_buf = BytesIO()
+        with zipfile.ZipFile(zip_buf, "w") as zf:
+            zf.writestr("Table 14.10a   Paid hours worked - Basic 2025.xlsx", b"not the file we want")
+            zf.writestr("Table 14.7b   Annual pay - Gross 2025 CV.xlsx", b"not the file we want either")
+            zf.writestr("Table 14.7a   Annual pay - Gross 2025.xlsx", xlsx_buf.getvalue())
+        zip_bytes = zip_buf.getvalue()
+
+        html = '<a href="/file?uri=/datasets/table14/2025provisional/ashetable142025provisional.zip">Download zip</a>'
 
         class _FakeTextResponse(_FakeResponse):
             @property
@@ -298,7 +310,7 @@ class TestAsheSalaryAgent:
 
         fake = _FakeAsyncClient(routes={
             "occupation4digitsoc2010ashetable14": _FakeTextResponse(content=html.encode()),
-            "table14.xlsx": _FakeResponse(content=xlsx_bytes),
+            "ashetable142025provisional.zip": _FakeResponse(content=zip_bytes),
         })
         monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: fake)
 
