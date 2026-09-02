@@ -312,3 +312,79 @@ class TestAsheSalaryAgent:
             )).fetchall()
         assert len(rows) == len(_ROLE_CATEGORIES)
         assert all(p50 == 58000 for _, p50 in rows)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GradOutcomesAgent
+# ══════════════════════════════════════════════════════════════════════════════
+
+_EMPLOYMENT_CSV = (
+    b"time_period,time_identifier,geographic_level,country_code,country_name,"
+    b"graduate_characteristic,graduate_breakdown,employment_rate,hs_employment_rate,"
+    b"unemployment_rate,inactivity_rate,employment_rate_accuracy,hs_employment_rate_accuracy,"
+    b"unemployment_rate_accuracy,inactivity_rate_accuracy,employment_rate_suppression,"
+    b"hs_employment_rate_suppression,unemployment_rate_suppression,inactivity_rate_suppression\n"
+    b"2023,Calendar year,National,E92000001,England,Sex,Male,88.0,70.0,3.0,9.0,0,0,0,0,0,0,0,0\n"
+    b"2023,Calendar year,National,E92000001,England,Sex,Female,86.0,68.0,3.4,10.6,0,0,0,0,0,0,0,0\n"
+    b"2023,Calendar year,National,E92000001,England,Degree Class,First,90.0,75.0,2.0,8.0,0,0,0,0,0,0,0,0\n"
+    b"2024,Calendar year,National,E92000001,England,Sex,Male,89.5,71.6,3.1,7.6,0,0,0,0,0,0,0,0\n"
+    b"2024,Calendar year,National,E92000001,England,Sex,Female,87.5,69.0,3.3,9.6,0,0,0,0,0,0,0,0\n"
+)
+
+_HEADCOUNT_CSV = (
+    b"time_period,time_identifier,geographic_level,country_code,country_name,level,"
+    b"broad_type_of_higher_education,type_of_higher_education,subject_level_1,subject_level_2,"
+    b"number_of_entrants,number_of_enrolments,number_of_qualifiers,"
+    b"percentage_of_entrants_by_characteristic,percentage_of_all_enrolments_by_characteristic,"
+    b"percentage_of_qualifiers_by_characteristic\n"
+    b"201819,Academic year,National,E92000001,England,Total,Total,Total,Computing,Total,35000,85000,19000,4.7,4.9,3.9\n"
+    b"201920,Academic year,National,E92000001,England,Total,Total,Total,Computing,Total,36780,89385,20365,4.8,5,4\n"
+    b"201920,Academic year,National,E92000001,England,Level 4,Total,Total,Computing,Total,6315,11580,2800,9.5,10.4,6.9\n"
+    b"201920,Academic year,National,E92000001,England,Total,Total,Total,Nursing,Total,9000,20000,5000,1,1,1\n"
+)
+
+
+class TestGradOutcomesAgent:
+    def test_parses_latest_year_sex_average_and_computing_qualifiers(self, fresh_db, engine, monkeypatch):
+        import httpx
+        from marketforge.agents.research.grad_outcomes_agent import GradOutcomesAgent
+
+        fake = _FakeAsyncClient(routes={
+            "14b5ea18-1748-4c75-9d52-736f80557727": _FakeResponse(content=_EMPLOYMENT_CSV),
+            "3e38b2bc-6814-429b-9ba3-4b42b719adcc": _FakeResponse(content=_HEADCOUNT_CSV),
+        })
+        monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: fake)
+
+        agent = GradOutcomesAgent()
+        out = asyncio.run(agent.run({}))
+
+        assert out["grad_employment_updated"] is True
+        assert out["grad_headcount_updated"] is True
+        assert out["quality"] == "good"
+
+        with engine.connect() as conn:
+            emp = conn.execute(text(
+                "SELECT year, employment_rate, unemployment_rate FROM external_grad_employment"
+            )).fetchone()
+            hc = conn.execute(text(
+                "SELECT year, subject, qualifiers_count FROM external_grad_headcount"
+            )).fetchone()
+
+        # Latest year (2024) Male/Female average: employment (89.5+87.5)/2=88.5, unemployment (3.1+3.3)/2=3.2
+        assert emp == (2024, 88.5, 3.2)
+        # subject_level_2='Total' row for Computing, latest time_period '201920'
+        assert hc == ("201920", "Computing", 20365)
+
+    def test_both_sources_failing_returns_poor_quality(self, fresh_db, monkeypatch):
+        import httpx
+        from marketforge.agents.research.grad_outcomes_agent import GradOutcomesAgent
+
+        fake = _FakeAsyncClient(raise_on_get=True)
+        monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: fake)
+
+        agent = GradOutcomesAgent()
+        out = asyncio.run(agent.run({}))
+
+        assert out["grad_employment_updated"] is False
+        assert out["grad_headcount_updated"] is False
+        assert out["quality"] == "poor"

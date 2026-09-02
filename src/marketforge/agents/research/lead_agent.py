@@ -444,28 +444,34 @@ class ExternalStatsLeadAgent(DeepAgent):
         from marketforge.agents.research.ons_vacancy_agent import OnsVacancyTrendAgent
         from marketforge.agents.research.sponsor_register_agent import SponsorRegisterAgent
         from marketforge.agents.research.ashe_salary_agent import AsheSalaryAgent
+        from marketforge.agents.research.grad_outcomes_agent import GradOutcomesAgent
 
         self._ons_vacancy   = OnsVacancyTrendAgent()
         self._sponsor       = SponsorRegisterAgent()
         self._ashe          = AsheSalaryAgent()
+        self._grad_outcomes = GradOutcomesAgent()
 
     async def plan(self, context: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
         return {"adaptive": state.get("adaptive_params", {})}
 
     async def execute(self, plan: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
         import asyncio
-        ons_out, sponsor_out, ashe_out = await asyncio.gather(
+        ons_out, sponsor_out, ashe_out, grad_out = await asyncio.gather(
             self._ons_vacancy.run({}),
             self._sponsor.run({}),
             self._ashe.run({}),
+            self._grad_outcomes.run({}),
             return_exceptions=True,
         )
-        for _var in (ons_out, sponsor_out, ashe_out):
+        for _var in (ons_out, sponsor_out, ashe_out, grad_out):
             if isinstance(_var, Exception):
                 logger.warning("external_stats_lead.sub_agent_error", error=str(_var))
 
         def _safe(val): return val if not isinstance(val, Exception) else {}
-        return {"ons": _safe(ons_out), "sponsor": _safe(sponsor_out), "ashe": _safe(ashe_out)}
+        return {
+            "ons": _safe(ons_out), "sponsor": _safe(sponsor_out),
+            "ashe": _safe(ashe_out), "grad": _safe(grad_out),
+        }
 
     async def reflect(
         self, plan: dict[str, Any], result: dict[str, Any], state: dict[str, Any]
@@ -474,6 +480,7 @@ class ExternalStatsLeadAgent(DeepAgent):
             result.get("ons", {}).get("quality"),
             result.get("sponsor", {}).get("quality"),
             result.get("ashe", {}).get("quality"),
+            result.get("grad", {}).get("quality"),
         ]
         quality = "poor" if all(q in (None, "poor") for q in qualities) else "good"
         state["last_yield"] = sum(1 for q in qualities if q not in (None, "poor"))
@@ -484,5 +491,7 @@ class ExternalStatsLeadAgent(DeepAgent):
             "ons_vacancy_rows":        result.get("ons", {}).get("ons_vacancy_rows", 0),
             "sponsor_matches_updated": result.get("sponsor", {}).get("sponsor_matches_updated", 0),
             "ashe_benchmark_updated":  result.get("ashe", {}).get("ashe_benchmark_updated", False),
+            "grad_employment_updated": result.get("grad", {}).get("grad_employment_updated", False),
+            "grad_headcount_updated":  result.get("grad", {}).get("grad_headcount_updated", False),
             "quality":                 reflection.get("quality"),
         }
