@@ -27,6 +27,7 @@ import structlog
 from marketforge.agents.base import DeepAgent
 from marketforge.config.settings import settings
 from marketforge.models.job import RawJob
+from marketforge.nlp.taxonomy import detect_salary_currency, extract_salary, is_ai_ml_relevant
 
 logger = structlog.get_logger(__name__)
 
@@ -66,14 +67,6 @@ _HEADERS = {
     "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-GB,en;q=0.9",
 }
-
-_AI_KEYWORDS = frozenset({
-    "machine learning", "ml engineer", "ai engineer", "data scientist",
-    "llm", "nlp engineer", "computer vision", "deep learning",
-    "research scientist", "mlops", "data engineer", "generative ai",
-    "pytorch", "tensorflow", "applied scientist",
-})
-
 
 class SpecialistBoardsDeepAgent(DeepAgent):
     """
@@ -235,6 +228,7 @@ class SpecialistBoardsDeepAgent(DeepAgent):
                 job_id=f"sb_{hash(href) & 0xFFFFFFFF}",
                 title=title, company=company, location=location[:100],
                 salary_min=sal_min, salary_max=sal_max,
+                salary_currency=detect_salary_currency(f"{sal_text} {desc}"),
                 description=desc[:4000], url=href,
                 source="specialist_boards",
             ))
@@ -250,7 +244,7 @@ class SpecialistBoardsDeepAgent(DeepAgent):
                     href = urljoin(page_url, href)
                 if href in seen:
                     continue
-                if any(kw in text.lower() for kw in _AI_KEYWORDS):
+                if is_ai_ml_relevant(text):
                     seen.add(href)
                     jobs.append(RawJob(
                         job_id=f"sb_{hash(href) & 0xFFFFFFFF}",
@@ -264,24 +258,18 @@ class SpecialistBoardsDeepAgent(DeepAgent):
 
     @staticmethod
     def _extract_salary(text: str) -> tuple[float | None, float | None]:
-        m = re.search(r"£\s*(\d{2,3})(?:,\d{3})?\s*[-–]\s*£?\s*(\d{2,3})(?:,\d{3})?", text)
-        if m:
-            lo, hi = float(m.group(1)), float(m.group(2))
-            if lo < 500:
-                lo *= 1000; hi *= 1000
-            return lo, hi
-        m2 = re.search(r"£\s*(\d{2,3})k?\b", text, re.I)
-        if m2:
-            v = float(m2.group(1))
-            if v < 500:
-                v *= 1000
-            return v, v
-        return None, None
+        """
+        Delegates to the shared nlp.taxonomy.extract_salary() — previously a
+        separately maintained regex copy here had the same "<500 -> assume
+        £k shorthand" bug that misread day-rate text as an annual salary;
+        the shared implementation excludes day/hourly-rate text instead of
+        guessing an annualised figure.
+        """
+        return extract_salary(text)
 
     @staticmethod
     def _is_relevant(job: RawJob) -> bool:
-        text = f"{job.title} {job.description}".lower()
-        return any(kw in text for kw in _AI_KEYWORDS)
+        return is_ai_ml_relevant(job.title, job.description)
 
     async def reflect(
         self, plan: dict[str, Any], result: dict[str, Any], state: dict[str, Any]

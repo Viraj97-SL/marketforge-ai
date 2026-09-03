@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
 from marketforge.nlp.taxonomy import (
     classify_role,
+    detect_salary_currency,
     detect_sponsorship,
     detect_startup,
     extract_salary,
@@ -75,13 +76,23 @@ class JobSourceConnector(ABC):
 
     @staticmethod
     def _enrich_salary(job: RawJob) -> RawJob:
-        """Extract salary from description when structured fields are missing."""
+        """
+        Extract salary from description when structured fields are missing,
+        and detect currency regardless of whether salary came from a
+        structured API field or the regex fallback — every connector
+        previously left salary_currency at the RawJob default of "GBP"
+        unconditionally, with nothing ever actually checking it, so a
+        USD-quoted remote role's raw number could silently pollute GBP
+        aggregates in SalaryIntelligenceAgent.
+        """
         if job.salary_min is None and job.salary_max is None and job.description:
             low, high = extract_salary(job.description)
             if low:
                 job.salary_min = low
             if high:
                 job.salary_max = high
+        if job.description:
+            job.salary_currency = detect_salary_currency(job.description)
         return job
 
     @staticmethod

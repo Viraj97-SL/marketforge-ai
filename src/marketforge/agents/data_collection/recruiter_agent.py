@@ -20,6 +20,7 @@ import structlog
 from marketforge.agents.base import DeepAgent
 from marketforge.config.settings import settings
 from marketforge.models.job import RawJob
+from marketforge.nlp.taxonomy import detect_salary_currency, extract_salary, is_ai_ml_relevant
 
 logger = structlog.get_logger(__name__)
 
@@ -67,11 +68,6 @@ _AGENCIES = [
     },
 ]
 
-_AI_KEYWORDS = frozenset({
-    "machine learning", "ml engineer", "ai engineer", "data scientist",
-    "llm", "nlp", "computer vision", "deep learning", "pytorch",
-    "research scientist", "mlops", "data engineer", "generative ai",
-})
 
 
 class RecruiterBoardsDeepAgent(DeepAgent):
@@ -182,6 +178,7 @@ class RecruiterBoardsDeepAgent(DeepAgent):
             location=location,
             salary_min=sal_min,
             salary_max=sal_max,
+            salary_currency=detect_salary_currency(content),
             description=desc[:8000],
             url=url,
             source="recruiter_boards",
@@ -189,20 +186,15 @@ class RecruiterBoardsDeepAgent(DeepAgent):
 
     @staticmethod
     def _extract_salary(text: str) -> tuple[float | None, float | None]:
-        """Extract salary from recruiter listing text."""
-        m = re.search(r"£\s*(\d{2,3})(?:,\d{3})?\s*[-–]\s*£?\s*(\d{2,3})(?:,\d{3})?",
-                      text, re.IGNORECASE)
-        if m:
-            lo, hi = float(m.group(1)), float(m.group(2))
-            if lo < 500:  # likely in thousands
-                lo *= 1000
-                hi *= 1000
-            return lo, hi
-        m2 = re.search(r"£\s*(\d{2,3})k\b", text, re.IGNORECASE)
-        if m2:
-            v = float(m2.group(1)) * 1000
-            return v, v
-        return None, None
+        """
+        Extract salary from recruiter listing text — delegates to the shared
+        nlp.taxonomy.extract_salary() (previously a separately maintained
+        regex copy here had the same "<500 -> assume £k shorthand" bug that
+        misread day-rate text like "£400 - £450 per day" as a £400k-£450k
+        annual salary; the shared implementation excludes day/hourly-rate
+        text instead of guessing).
+        """
+        return extract_salary(text)
 
     @staticmethod
     def _extract_company(title: str, content: str, agency: str) -> str:
@@ -218,8 +210,7 @@ class RecruiterBoardsDeepAgent(DeepAgent):
 
     @staticmethod
     def _is_relevant(job: RawJob) -> bool:
-        text = f"{job.title} {job.description}".lower()
-        return any(kw in text for kw in _AI_KEYWORDS)
+        return is_ai_ml_relevant(job.title, job.description)
 
     async def reflect(
         self, plan: dict[str, Any], result: dict[str, Any], state: dict[str, Any]

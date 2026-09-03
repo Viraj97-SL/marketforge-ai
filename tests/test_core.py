@@ -217,6 +217,58 @@ class TestSalaryNER:
         lo, hi = extract_salary("salary £5 per hour")  # too low for annual
         assert lo is None
 
+    def test_extract_salary_day_rate_not_annualised(self):
+        # Regression test: "up to £400 per day" previously matched the
+        # single-value "up to £X" pattern, and since 400 < 1000 the £k
+        # shorthand rule multiplied it into a fabricated £400,000 "annual"
+        # salary — which then cleared every downstream bound check.
+        from marketforge.nlp.taxonomy import extract_salary
+        lo, hi = extract_salary("Contract role. Rate: up to £400 per day, outside IR35.")
+        assert lo is None
+        assert hi is None
+
+    def test_extract_salary_day_rate_range_not_annualised(self):
+        from marketforge.nlp.taxonomy import extract_salary
+        lo, hi = extract_salary("Day rate: £350 - £450 per day")
+        assert lo is None
+        assert hi is None
+
+    def test_extract_salary_hourly_not_annualised(self):
+        from marketforge.nlp.taxonomy import extract_salary
+        lo, hi = extract_salary("£35/hr, hybrid working available")
+        assert lo is None
+        assert hi is None
+
+    def test_extract_salary_annual_still_works_alongside_day_rate_guard(self):
+        # The day-rate guard must not swallow genuine annual salaries.
+        from marketforge.nlp.taxonomy import extract_salary
+        lo, hi = extract_salary("Salary: £70,000 - £90,000 per annum")
+        assert lo == 70_000
+        assert hi == 90_000
+
+    def test_is_day_or_hourly_rate(self):
+        from marketforge.nlp.taxonomy import is_day_or_hourly_rate
+        assert is_day_or_hourly_rate("up to £400 per day") is True
+        assert is_day_or_hourly_rate("Day rate: £450") is True
+        assert is_day_or_hourly_rate("£70,000 per annum") is False
+        assert is_day_or_hourly_rate("") is False
+
+
+class TestCurrencyDetection:
+    def test_detects_usd(self):
+        from marketforge.nlp.taxonomy import detect_salary_currency
+        assert detect_salary_currency("Salary: $150,000 USD, remote from anywhere") == "USD"
+
+    def test_detects_eur(self):
+        from marketforge.nlp.taxonomy import detect_salary_currency
+        assert detect_salary_currency("€80,000 - €100,000 EUR") == "EUR"
+
+    def test_defaults_to_gbp(self):
+        from marketforge.nlp.taxonomy import detect_salary_currency
+        assert detect_salary_currency("£70,000 per annum") == "GBP"
+        assert detect_salary_currency("") == "GBP"
+        assert detect_salary_currency("Competitive salary") == "GBP"
+
 
 class TestRoleClassifier:
     @pytest.mark.parametrize("title,expected_role", [

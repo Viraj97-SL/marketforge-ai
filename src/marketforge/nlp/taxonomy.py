@@ -262,8 +262,15 @@ class SpacyGate:
             ruler = nlp.add_pipe("entity_ruler", before="ner", config={"overwrite_ents": True})
             patterns = [
                 {"label": "TECH", "pattern": [{"LOWER": {"IN": list(_TECH_PATTERNS)}}]},
-                # Captures "experience with X" / "knowledge of X" / "proficiency in X"
-                {"label": "TECH", "pattern": [{"LOWER": {"IN": ["experience", "knowledge", "proficiency", "expertise"]}}, {"LOWER": {"IN": ["with", "in", "of"]}}, {"IS_ALPHA": True}]},
+                # Captures "experience with X" / "knowledge of X" / "proficiency
+                # in X" — X can be 1-3 tokens ("OP": "{1,3}") so multi-word
+                # skills like "Apache Spark" or "large language models" aren't
+                # truncated to their first token.
+                {"label": "TECH", "pattern": [
+                    {"LOWER": {"IN": ["experience", "knowledge", "proficiency", "expertise"]}},
+                    {"LOWER": {"IN": ["with", "in", "of"]}},
+                    {"IS_ALPHA": True, "OP": "{1,3}"},
+                ]},
             ]
             ruler.add_patterns(patterns)
             cls._nlp = nlp
@@ -279,7 +286,12 @@ class SpacyGate:
         if self._nlp is None:
             return []
         try:
-            doc = self._nlp(text[:5000])  # cap to 5000 chars for speed
+            # 20000 chars comfortably covers real postings (rarely >15k
+            # chars) while still bounding worst-case latency. The old 5000
+            # cap silently made skills mentioned later in a long posting
+            # (e.g. a "Tech stack" section after a long "About us") invisible
+            # to Gate 2 and, transitively, to Gate 3.
+            doc = self._nlp(text[:20000])
             found = []
             for ent in doc.ents:
                 if ent.label_ in ("TECH", "PRODUCT", "ORG"):
@@ -418,6 +430,49 @@ _SALARY_PATTERNS = [
     re.compile(r"£\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)\s*(?:k|K)?\s*(?:per\s+annum|p\.?a\.?|per\s+year)", re.IGNORECASE),
 ]
 
+# A £ amount denominated per day/hour, not per year — matched independently
+# of _SALARY_PATTERNS above so it can veto extraction before the "<1000 ->
+# assume £k shorthand" rule misreads e.g. "up to £400 per day" as £400,000/yr.
+_RATE_MARKER_RE = re.compile(
+    r"£\s*\d[\d,]*(?:\.\d+)?\s*(?:k|K)?[^.\n]{0,20}"
+    r"(?:per\s+day|/\s*day|day\s+rate|daily\s+rate|per\s+hour|/\s*hr|/\s*hour|hourly|"
+    r"\bp\.?\s*/?\s*d\b|\bp\.?\s*/?\s*h\b)"
+    r"|(?:day\s+rate|daily\s+rate|hourly\s+rate)\s*[:\-]?\s*£",
+    re.IGNORECASE,
+)
+
+_CURRENCY_MARKERS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"\$\s*\d|USD|US\s+dollars", re.IGNORECASE), "USD"),
+    (re.compile(r"€\s*\d|EUR\b|euros?\b", re.IGNORECASE), "EUR"),
+]
+
+
+def is_day_or_hourly_rate(text: str) -> bool:
+    """
+    True if the text expresses pay as a day/hourly rate rather than an
+    annual salary — e.g. "up to £400 per day", "Day rate: £450",
+    "£35/hr". Checked before any £-amount is treated as an annual figure.
+    """
+    if not text:
+        return False
+    return bool(_RATE_MARKER_RE.search(text))
+
+
+def detect_salary_currency(text: str) -> str:
+    """
+    Cheap keyword/symbol currency detection. Defaults to GBP (the vast
+    majority of UK job board postings) rather than leaving it unset —
+    every connector previously left salary_currency at the RawJob default
+    of "GBP" unconditionally, with no actual detection, so a USD-quoted
+    remote role's raw number could silently pollute GBP aggregates.
+    """
+    if not text:
+        return "GBP"
+    for pattern, code in _CURRENCY_MARKERS:
+        if pattern.search(text):
+            return code
+    return "GBP"
+
 
 def _parse_salary_value(value_str: str, is_k: bool) -> float:
     cleaned = value_str.replace(",", "").replace("£", "").strip()
@@ -431,8 +486,17 @@ def extract_salary(text: str) -> tuple[float | None, float | None]:
     """
     Extract salary range from free-text job description.
     Returns (min, max) in GBP; both None if no salary detected.
+
+    Day/hourly-rate postings are deliberately excluded rather than
+    annualised — a day-rate contractor role isn't comparable to a
+    permanent annual salary, and naively multiplying (e.g. day-rate x
+    ~220 working days) would still be a guess presented as a real figure.
+    "Not disclosed" is the honest answer here.
     """
     if not text:
+        return None, None
+
+    if is_day_or_hourly_rate(text):
         return None, None
 
     # Pattern 1: range £X[k] – £Y[k]
@@ -508,6 +572,78 @@ def classify_role(title: str) -> tuple[str, str]:
             break
 
     return role, level
+
+
+# ── AI/ML relevance gate ─────────────────────────────────────────────────────
+# Canonical positive-signal list — consolidates what used to be two separately
+# maintained (and drifting) copies of _AI_KEYWORDS in specialist_boards_agent.py
+# and recruiter_agent.py. Those two now import and call is_ai_ml_relevant()
+# instead of keeping their own local list.
+_AI_ML_POSITIVE_KEYWORDS = frozenset({
+    "machine learning", "ml engineer", "ai engineer", "data scientist",
+    "llm", "large language model", "nlp engineer", "natural language processing",
+    "computer vision", "deep learning", "research scientist", "mlops",
+    "data engineer", "generative ai", "pytorch", "tensorflow",
+    "applied scientist", "artificial intelligence", "neural network",
+    "foundation model", "reinforcement learning", "ai safety",
+    "ai product", "ai researcher", "ai research", "data science",
+    "computer vision engineer", "prompt engineer",
+})
+
+# Titles that are almost never AI/ML-relevant even when they contain a
+# generic word (e.g. "Engineer") that a loose positive-keyword check alone
+# would let through. This is what actually stops "Electrical Engineer" /
+# "Legal Clerk" / "Warehouse Operative" from reaching the job board — Adzuna
+# and Reed's upstream search/category scoping alone isn't narrow enough.
+_NEGATIVE_TITLE_PATTERNS: list[re.Pattern] = [
+    re.compile(r"\belectrical\s+eng", re.I),
+    re.compile(r"\bmechanical\s+eng", re.I),
+    re.compile(r"\bcivil\s+eng", re.I),
+    re.compile(r"\bstructural\s+eng", re.I),
+    re.compile(r"\bclerk\b", re.I),
+    re.compile(r"\bdriver\b", re.I),
+    re.compile(r"\bwarehouse\b", re.I),
+    re.compile(r"\bforklift\b", re.I),
+    re.compile(r"\bnurse\b|\bnursing\b", re.I),
+    re.compile(r"\bteacher\b|\bteaching\s+assistant\b", re.I),
+    re.compile(r"\baccountant\b|\bbookkeep", re.I),
+    re.compile(r"\bsales\s+(?:representative|executive|assistant)\b", re.I),
+    re.compile(r"\breceptionist\b", re.I),
+    re.compile(r"\bcleaner\b|\bcleaning\s+operative\b", re.I),
+    re.compile(r"\bsecurity\s+guard\b", re.I),
+    re.compile(r"\bplumber\b|\belectrician\b(?!.*\bsoftware\b)", re.I),
+    re.compile(r"\bchef\b|\bwaiter\b|\bwaitress\b|\bbarista\b", re.I),
+    re.compile(r"\bhgv\b|\bcourier\b|\bdelivery\s+driver\b", re.I),
+]
+
+
+def is_ai_ml_relevant(title: str, description: str = "") -> bool:
+    """
+    Cost-free (regex/keyword only) relevance gate: a job must show a real
+    AI/ML signal and must not match a hard negative-title pattern.
+
+    This is checked at ingest time in worker.py::job_ingest() as an actual
+    rejection gate (a job failing this is never written to market.jobs) —
+    not just an optional per-scraper filter. classify_role() alone can't do
+    this job: it always assigns a category (falling back to "other") and
+    never rejects, so a generic "Engineer" or "Clerk" title would otherwise
+    reach the database unfiltered, which is what let irrelevant postings
+    from Adzuna/Reed (the two sources with no per-scraper self-filter)
+    through onto the public job board.
+    """
+    title = title or ""
+    if any(p.search(title) for p in _NEGATIVE_TITLE_PATTERNS):
+        return False
+
+    combined = f"{title} {description or ''}".lower()
+    if any(kw in combined for kw in _AI_ML_POSITIVE_KEYWORDS):
+        return True
+
+    # Title alone can also carry a positive signal even without any of the
+    # free-text keywords (e.g. "AI Product Manager" has no "eng"/"scien"
+    # match in _ROLE_PATTERNS above, but is unambiguously AI/ML-relevant).
+    role, _ = classify_role(title)
+    return role != "other"
 
 
 # ── Sponsorship & startup detectors ──────────────────────────────────────────
