@@ -616,6 +616,15 @@ _NEGATIVE_TITLE_PATTERNS: list[re.Pattern] = [
     re.compile(r"\bhgv\b|\bcourier\b|\bdelivery\s+driver\b", re.I),
 ]
 
+# Standalone AI/ML abbreviations as whole words — catches titles like
+# "AI Architect", "AI Instructor", "AI Transformation Lead", "Customer AI
+# Developer Specialist" that don't contain any of the longer compound
+# phrases in _AI_ML_POSITIVE_KEYWORDS (e.g. no "ai engineer"/"ai product")
+# and don't match classify_role()'s narrower _ROLE_PATTERNS regexes either.
+# \b word boundaries make this safe against false positives like "maintain"
+# or "email" containing "ai"/"ml" as a sub-string, not a standalone word.
+_STANDALONE_AI_ML_RE = re.compile(r"\b(?:AI|ML|LLM|NLP|GPT)\b", re.I)
+
 
 def is_ai_ml_relevant(title: str, description: str = "") -> bool:
     """
@@ -637,6 +646,8 @@ def is_ai_ml_relevant(title: str, description: str = "") -> bool:
 
     combined = f"{title} {description or ''}".lower()
     if any(kw in combined for kw in _AI_ML_POSITIVE_KEYWORDS):
+        return True
+    if _STANDALONE_AI_ML_RE.search(combined):
         return True
 
     # Title alone can also carry a positive signal even without any of the

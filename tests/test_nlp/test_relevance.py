@@ -31,6 +31,21 @@ class TestPositiveCases:
             "Build and deploy PyTorch models for our LLM-powered product.",
         ) is True
 
+    def test_standalone_ai_abbreviation_in_title(self):
+        # Regression: titles using bare "AI" as a word (not a compound
+        # phrase like "ai engineer"/"ai product" in _AI_ML_POSITIVE_KEYWORDS,
+        # and not matching classify_role()'s narrower _ROLE_PATTERNS) were
+        # being incorrectly rejected — found via a live audit against
+        # production data. "AI Architect", "AI Instructor", "AI
+        # Transformation Lead" etc. all have no "eng"/"product"/"safety"
+        # immediately after "AI" so classify_role() returned "other" too.
+        for title in [
+            "AI Architect", "AI Instructor", "AI Technical Lead",
+            "AI Transformation Lead", "Customer AI Developer Specialist",
+            "AI Creative Technologist", "AI and Automations Engineer",
+        ]:
+            assert is_ai_ml_relevant(title, "") is True, title
+
 
 class TestNegativeCases:
     def test_electrical_engineer_rejected(self):
@@ -46,6 +61,14 @@ class TestNegativeCases:
         assert is_ai_ml_relevant(
             "Software Engineer",
             "Build and maintain our e-commerce checkout flow using Java and Spring.",
+        ) is False
+
+    def test_standalone_regex_does_not_false_positive_on_substrings(self):
+        # \b word boundaries must prevent "ai"/"ml" matching inside unrelated
+        # words like "maintain", "detail", "email", "html".
+        assert is_ai_ml_relevant(
+            "Facilities Maintenance Engineer",
+            "Maintain building services and detail snagging lists. Reply by email.",
         ) is False
 
     def test_negative_title_wins_even_with_stray_positive_keyword(self):
