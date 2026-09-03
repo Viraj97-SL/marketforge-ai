@@ -35,6 +35,28 @@ It is **not** a job board or a CV-matching app. It is a market intelligence engi
 
 ---
 
+## Recent Updates
+
+### 2026-09-03 — Data integrity: relevance gate, salary validation, deeper extraction
+
+- **AI/ML relevance gate**: `is_ai_ml_relevant()` in `nlp/taxonomy.py`, applied in both the DeepAgent (`DataCollectionLeadAgent`) and LangGraph (`agents/graphs/data_collection.py`) ingestion paths — rejects generic/irrelevant postings (electrical engineers, clerks, drivers, etc.) before they reach `market.jobs`. Includes a standalone `\b(?:AI|ML|LLM|NLP|GPT)\b` word-boundary check so bare-word titles like "AI Architect" aren't false-rejected.
+- **Salary integrity fix**: day/hourly-rate postings (e.g. "£400 per day") were being misread as annual salaries via a `<1000 → ×1000` k-shorthand heuristic — fabricating six-figure salaries. `extract_salary()` now detects rate markers first and skips those postings instead of guessing.
+- **Currency detection**: `detect_salary_currency()` stops non-GBP listings from silently polluting GBP aggregates. `SalaryIntelligenceAgent` now filters `salary_currency = 'GBP'` and applies real IQR outlier trimming (`Q1 − 1.5·IQR` / `Q3 + 1.5·IQR`) on top of the existing absolute bounds, with a `MIN_SAMPLE_SIZE = 10` floor.
+- **Deeper skill extraction**: Gate 2 (spaCy) input cap raised from 5,000 to 20,000 characters and its "experience with X" pattern widened to 1–3 token phrases, so multi-word skills (e.g. "Apache Spark") and skills mentioned deep in long postings aren't missed. The `_ROLE_IMPLIED` hardcoded fallback in `worker.py` now only fires for genuinely short descriptions, not whenever all 3 gates found nothing on a long posting.
+- **Production cleanup**: removed 871 pre-relevance-gate irrelevant job rows, corrected 13 mis-flagged salary currencies, regenerated the weekly snapshot, flushed the Redis dashboard cache.
+- **Deploy fix**: `marketforge-backend/pyproject.toml` had a stale duplicate `marketforge-ai` git pin (pointing at a renamed branch) that failed every Railway build at `pip install -e .`, silently leaving production on a stale build. Removed the redundant declaration — `requirements.txt`'s commit-hash pin is now the single source.
+
+### 2026-09-02 — Real external data + graduate-reality market story
+
+- **4 new research agents** pulling real public UK government data, orchestrated by `ExternalStatsLeadAgent`: ONS vacancy trend (`ons_vacancy_agent.py`), Home Office sponsor register verification (`sponsor_register_agent.py`), ONS ASHE salary benchmarks (`ashe_salary_agent.py`), DfE graduate outcomes (`grad_outcomes_agent.py`).
+- New tables: `market.external_ons_vacancies`, `external_sponsor_matches`, `external_ashe_salary`, `external_grad_employment`, `external_grad_headcount`.
+- Fixed the ASHE agent grabbing the wrong workbook out of the ONS zip archive (was silently storing "hours worked" figures as annual salaries); corrected and verified real values (P25 £41,141 / Median £55,587 / P75 £75,077).
+- Rebuilt the `/market` page as a genuine 5-act scrollytelling narrative (hiring pipeline, entry-level skill shift, skill-floor heatmap, who-opens-the-door donut, pay-reality gap plot), replacing an earlier version that just reskinned the same 4 datasets into different chart shapes.
+- Replaced the hand-drawn UK map with one built from a real traced coastline (Wikimedia Commons public-domain data), data-driven from live city counts.
+- Fixed a CSS conflict where `overflow-hidden` (for rounded corners) was silently breaking `position: sticky` scroll panels; switched to `clip-path: inset(0 round 1rem)`.
+
+---
+
 ## Three-Repo Architecture
 
 | Repo | Role | Deployed on |
@@ -369,6 +391,14 @@ Manual trigger: `python worker.py --run-now ingest`
 | `GET` | `/api/v1/market/salary` | Salary p25/p50/p75 benchmarks |
 | `GET` | `/api/v1/market/trending` | Rising / declining skills week-on-week |
 | `GET` | `/api/v1/jobs` | Browse indexed roles with filters |
+| `GET` | `/api/v1/market/snapshot-history` | Weekly snapshot history (job count + salary) for time-series charts |
+| `GET` | `/api/v1/market/external/vacancy-trend` | Real ONS vacancy trend (external, government-sourced) |
+| `GET` | `/api/v1/market/external/sponsor-verification` | Home Office sponsor register cross-check |
+| `GET` | `/api/v1/market/external/salary-benchmark` | ONS ASHE salary benchmark by occupation |
+| `GET` | `/api/v1/market/external/graduate-outcomes` | DfE graduate employment outcomes |
+| `GET` | `/api/v1/market/entry-level/skill-shift` | Entry-level vs experienced skill demand comparison |
+| `GET` | `/api/v1/market/entry-level/universal-skills` | Skills common across all entry-level roles |
+| `GET` | `/api/v1/market/entry-level/company-mix` | Company-type mix hiring entry-level AI/ML roles |
 | `POST` | `/api/v1/career/analyse` | SBERT match + Gemini 2.5 Pro career narrative (10 req/min) |
 | `POST` | `/api/v1/career/cv-analyse` | ATS score + GDPR-compliant gap plan (3 req/hour) |
 | `GET` | `/api/v1/pipeline/runs` | Pipeline execution history |
