@@ -224,6 +224,77 @@ class TestMarketSalaryEndpoint:
         assert resp.status_code in (200, 404)
 
 
+class TestSalaryFilteredEndpointIntegrity:
+    """
+    Covers the ad-hoc _compute_salary_from_jobs() path (hit whenever
+    experience_level/location/work_model is not "all") — this used to have
+    NO currency filter and NO outlier defense at all, independent of and
+    weaker than SalaryIntelligenceAgent's. A day-rate-style mis-parse or a
+    stray USD-denominated row would silently skew every filtered slice the
+    frontend's /salary page renders (by role, by experience, by region, by
+    work model).
+    """
+
+    @pytest.fixture(scope="class", autouse=True)
+    def seed_currency_iqr_rows(self, populated_db):
+        from marketforge.memory.postgres import get_sync_engine
+        engine = get_sync_engine()
+        with engine.connect() as conn:
+            # 10 clean GBP rows, all role_category/experience_level shared
+            # so a single filtered query (non-"all" experience_level) hits
+            # the computed path and finds exactly these as its sample.
+            for i in range(10):
+                mid = 60_000 + i * 2_000  # 60k..78k
+                conn.execute(text("""
+                    INSERT OR IGNORE INTO jobs
+                      (job_id, dedup_hash, run_id, title, company, location, salary_min, salary_max,
+                       role_category, experience_level, work_model, source, description)
+                    VALUES (:jid, :jid, 'test_run', 'Test Role', 'TestCo', 'Remote', :sal, :sal,
+                            'test_currency_iqr', 'mid', 'remote', 'test', 'test')
+                """), {"jid": f"iqr_clean_{i}", "sal": mid})
+            # 2 USD rows — must be excluded by the currency filter even
+            # though they'd otherwise pass every bound/IQR check.
+            for i in range(2):
+                conn.execute(text("""
+                    INSERT OR IGNORE INTO jobs
+                      (job_id, dedup_hash, run_id, title, company, location, salary_min, salary_max,
+                       role_category, experience_level, work_model, salary_currency, source, description)
+                    VALUES (:jid, :jid, 'test_run', 'Test Role', 'TestCo', 'Remote', 220000, 220000,
+                            'test_currency_iqr', 'mid', 'remote', 'USD', 'test', 'test')
+                """), {"jid": f"iqr_usd_{i}"})
+            # 1 extreme GBP outlier — a day-rate-style mis-parse stand-in,
+            # must be excluded by the bound/IQR layer.
+            conn.execute(text("""
+                INSERT OR IGNORE INTO jobs
+                  (job_id, dedup_hash, run_id, title, company, location, salary_min, salary_max,
+                   role_category, experience_level, work_model, source, description)
+                VALUES ('iqr_outlier', 'iqr_outlier', 'test_run', 'Test Role', 'TestCo', 'Remote', 1000000, 1000000,
+                        'test_currency_iqr', 'mid', 'remote', 'test', 'test')
+            """))
+            conn.commit()
+        return populated_db
+
+    def test_excludes_non_gbp_and_outlier_from_sample(self, client):
+        resp = client.get(
+            "/api/v1/market/salary?role_category=test_currency_iqr&experience_level=mid"
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        # Only the 10 clean GBP rows should survive — the 2 USD rows and
+        # the 1 extreme outlier must not inflate the sample or the p50.
+        assert data["salary_sample_size"] == 10
+        assert 60_000 <= data["salary_p50"] <= 78_000
+
+    def test_work_model_filter_isolates_segment(self, client):
+        # Same seeded rows are all work_model='remote' — filtering to
+        # 'onsite' should find nothing from this segment (404, not a
+        # crash, and not a silent fallback to the unfiltered sample).
+        resp = client.get(
+            "/api/v1/market/salary?role_category=test_currency_iqr&work_model=onsite"
+        )
+        assert resp.status_code == 404
+
+
 # ── /api/v1/market/trending ────────────────────────────────────────────────────
 
 class TestMarketTrendingEndpoint:
