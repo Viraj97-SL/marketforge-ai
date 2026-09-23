@@ -97,12 +97,12 @@ _DATE_RE   = re.compile(r"\b(20[0-2]\d|19\d\d)\b")
 
 @dataclass
 class ATSScore:
-    total:             float
+    total:             int
     grade:             str
-    breakdown:         dict[str, float]   # sub-score per dimension (0–100)
+    breakdown:         dict[str, int]     # sub-score per dimension (0–100)
     issues:            list[str]          # human-readable improvement hints
     skills_found:      list[str]          # skills extracted from CV text
-    keyword_match_pct: float              # % of target role's top skills present
+    keyword_match_pct: int                # % of target role's top skills present
 
 
 def score_cv(
@@ -130,24 +130,34 @@ def score_cv(
     complete_score   = _score_completeness(cv, issues)
     format_score     = _score_format(cv, issues)
 
+    # Round to whole numbers for the response: at this sample size (a handful
+    # of sub-dimensions, a few hundred sampled postings) a decimal implies a
+    # precision the underlying method doesn't support. Grade thresholds are
+    # already whole numbers, so this doesn't change any grade boundary.
     breakdown = {
-        "keyword_match": round(kw_score, 1),
-        "structure":     round(struct_score, 1),
-        "readability":   round(read_score, 1),
-        "completeness":  round(complete_score, 1),
-        "format_safety": round(format_score, 1),
+        "keyword_match": round(kw_score),
+        "structure":     round(struct_score),
+        "readability":   round(read_score),
+        "completeness":  round(complete_score),
+        "format_safety": round(format_score),
     }
 
-    total = sum(_WEIGHTS[k] * v for k, v in breakdown.items())
+    # Weighted total computed from the *unrounded* sub-scores, then rounded
+    # once at the end — rounding each sub-score first and summing rounded
+    # values would compound rounding error across 5 dimensions.
+    total = sum(_WEIGHTS[k] * v for k, v in zip(
+        ["keyword_match", "structure", "readability", "completeness", "format_safety"],
+        [kw_score, struct_score, read_score, complete_score, format_score],
+    ))
     grade = next(g for threshold, g in _GRADE_THRESHOLDS if total >= threshold)
 
     return ATSScore(
-        total             = round(total, 1),
+        total             = round(total),
         grade             = grade,
         breakdown         = breakdown,
         issues            = issues,
         skills_found      = skills_found,
-        keyword_match_pct = round(kw_pct, 1),
+        keyword_match_pct = round(kw_pct),
     )
 
 
