@@ -2012,6 +2012,37 @@ async def analyse_cv(
     )
 
 
+def _default_narrative(ats_score: float, match_pct: float, target_role: str, has_gaps: bool) -> str:
+    if not has_gaps:
+        return (
+            f"Your CV scores {ats_score:.0f}/100 for ATS compatibility with a "
+            f"{match_pct:.0f}% market match for {target_role} roles. There isn't yet "
+            f"enough {target_role} market data to rank specific skill gaps, so this "
+            f"is general ATS feedback only."
+        )
+    return (
+        f"Your CV scores {ats_score:.0f}/100 for ATS compatibility with a "
+        f"{match_pct:.0f}% market match for {target_role} roles. Closing the "
+        f"gaps below is the fastest way to raise both numbers."
+    )
+
+
+def _narrative_names_extra_skill(narrative: str, allowed: set[str]) -> bool:
+    """True if the narrative names a known taxonomy skill outside `allowed`."""
+    import re as _re
+    from marketforge.nlp.taxonomy import SKILL_TAXONOMY
+
+    allowed_lower   = {s.lower() for s in allowed}
+    narrative_lower = narrative.lower()
+    for entry in SKILL_TAXONOMY:
+        canonical = entry["canonical"]
+        if canonical.lower() in allowed_lower:
+            continue
+        if _re.search(rf"\b{_re.escape(canonical.lower())}\b", narrative_lower):
+            return True
+    return False
+
+
 async def _generate_cv_gap_plan(
     ats_score:     float,
     skills_found:  list[str],
@@ -2022,125 +2053,74 @@ async def _generate_cv_gap_plan(
     match_pct:     float,
 ) -> tuple[CVGapPlan, str]:
     """
-    LLM call to generate short/mid/long-term plan.
-    Seeded with ML-ranked skill buckets from gap_analyser — receives structured data only,
-    never raw CV text.
+    Build the gap plan. Ranking, bucketing and the plan's structure are
+    entirely deterministic — they come from gap_analyser's ML-ranked buckets,
+    never the model. The model's only job is to narrate the pipeline's own
+    figures in 2 sentences; its output is discarded (in favour of a
+    deterministic narrative) if it names any skill outside what was
+    computed, so it cannot introduce facts the pipeline didn't produce.
     """
+    has_gaps = bool(ml_short_term or ml_mid_term or ml_long_term)
+
+    # One bullet per ML-ranked skill — count and content are fixed by the
+    # deterministic buckets, so horizons can no longer end up with wildly
+    # uneven item counts the way free-form LLM bullets did.
+    short_term = [f"Complete a course or certification in {s}" for s in ml_short_term] \
+        or ["Add measurable outcomes and market-relevant keywords to your experience bullets"]
+    mid_term = [f"Build a portfolio project using {s}" for s in ml_mid_term] \
+        or ["Revisit this analysis once more market data is available for your target role"]
+    long_term = [f"Develop deep expertise in {s}" for s in ml_long_term] \
+        or ["Continue building depth in your current specialisation"]
+
+    narrative = _default_narrative(ats_score, match_pct, target_role, has_gaps)
+
+    if not has_gaps:
+        # Nothing for the model to narrate beyond the score/match figures
+        # already in the default narrative — skip the call rather than
+        # prompt it with empty buckets and let it invent generic advice.
+        return CVGapPlan(short_term=short_term, mid_term=mid_term, long_term=long_term), narrative
+
+    allowed_skills = set(skills_found) | set(ml_short_term) | set(ml_mid_term) | set(ml_long_term)
+
     try:
         from langchain_google_genai import ChatGoogleGenerativeAI
         from langchain_core.messages import HumanMessage
 
-        found_str  = ", ".join(skills_found[:15]) or "none detected"
-        short_str  = ", ".join(ml_short_term) or "none identified"
-        mid_str    = ", ".join(ml_mid_term)   or "none identified"
-        long_str   = ", ".join(ml_long_term)  or "none identified"
+        found_str = ", ".join(skills_found[:15]) or "none detected"
+        gaps_str  = ", ".join(sorted(allowed_skills - set(skills_found))) or "none"
 
-        prompt = f"""You are a UK AI/ML career advisor. Generate a structured career development plan.
+        prompt = f"""You are a UK AI/ML career advisor.
 
-STRUCTURED DATA (use only this — do not invent facts):
+STRUCTURED DATA (the only facts you may use):
 - ATS score: {ats_score:.0f}/100
 - Target role: {target_role}
-- Skills in CV: {found_str}
+- Skills already in the CV: {found_str}
 - Market match: {match_pct:.0f}%
-- ML-ranked quick-win skills to add (0-3 months): {short_str}
-- ML-ranked medium-effort skills (3-12 months): {mid_str}
-- ML-ranked deep-expertise skills (12+ months): {long_str}
+- Priority skill gaps to close: {gaps_str}
 
-Respond in this exact format:
-
-NARRATIVE: [2 sentences: current position assessment based on ATS score and market match]
-
-SHORT_TERM (0-3 months):
-- [specific action for each skill listed above, e.g. courses/certs]
-- [action 2]
-- [action 3]
-
-MID_TERM (3-12 months):
-- [project or bootcamp for each skill listed]
-- [action 2]
-- [action 3]
-
-LONG_TERM (12+ months):
-- [advanced specialisation or portfolio for each skill listed]
-- [action 2]
-
-Keep actions specific and achievable. Do not mention company names."""
+Write exactly 2 sentences assessing the candidate's current position and what
+closing these gaps would achieve. Do not name any skill, tool, framework or
+technology other than those listed above. Do not mention company names.
+Respond with ONLY the 2 sentences — no labels, no preamble."""
 
         llm = ChatGoogleGenerativeAI(
             model=settings.llm.fast_model,
             google_api_key=settings.llm.gemini_api_key,
             temperature=0.2,
         )
-        response = llm.invoke([HumanMessage(content=prompt)])
-        text     = response.content.strip()
+        response      = llm.invoke([HumanMessage(content=prompt)])
+        llm_narrative = response.content.strip()
 
-        # Parse structured sections
-        def _extract_bullets(section_text: str) -> list[str]:
-            return [
-                line.strip().lstrip("-•*123456789. ").strip()
-                for line in section_text.split("\n")
-                if line.strip() and line.strip()[0] in "-•*123456789"
-            ][:3]
-
-        narrative  = ""
-        short_term: list[str] = []
-        mid_term:   list[str] = []
-        long_term:  list[str] = []
-
-        current_section = ""
-        for line in text.split("\n"):
-            if line.startswith("NARRATIVE:"):
-                narrative = line.replace("NARRATIVE:", "").strip()
-                current_section = "narrative"
-            elif "SHORT_TERM" in line:
-                current_section = "short"
-            elif "MID_TERM" in line:
-                current_section = "mid"
-            elif "LONG_TERM" in line:
-                current_section = "long"
-            elif line.strip().startswith("-") or line.strip().startswith("•"):
-                item = line.strip().lstrip("-• ").strip()
-                if item:
-                    if current_section == "short":
-                        short_term.append(item)
-                    elif current_section == "mid":
-                        mid_term.append(item)
-                    elif current_section == "long":
-                        long_term.append(item)
-
-        if not narrative:
-            narrative = (
-                f"Your CV scores {ats_score:.0f}/100 for ATS compatibility with a "
-                f"{match_pct:.0f}% market match for {target_role} roles. "
-                f"Prioritise adding the missing skills to close key gaps."
-            )
-
-        # Fill empty LLM buckets with ML-seed defaults
-        def _seed(llm_items: list[str], ml_skills: list[str], verb: str) -> list[str]:
-            if llm_items:
-                return llm_items
-            return [f"{verb} {s}" for s in ml_skills[:3]] if ml_skills else [f"{verb} top missing skills"]
-
-        return (
-            CVGapPlan(
-                short_term = _seed(short_term, ml_short_term, "Complete a course or certification in"),
-                mid_term   = _seed(mid_term,   ml_mid_term,   "Build a portfolio project using"),
-                long_term  = _seed(long_term,  ml_long_term,  "Develop deep expertise in"),
-            ),
-            narrative,
-        )
+        if llm_narrative and not _narrative_names_extra_skill(llm_narrative, allowed_skills):
+            narrative = llm_narrative
+        else:
+            logger.warning("cv.gap_plan.narrative_rejected", reason="named skill outside computed gap list")
 
     except Exception as exc:
         logger.error("cv.gap_plan.error", error=str(exc))
-        # Graceful degradation: return ML-bucketed skills directly as actionable items
-        short_items = [f"Add {s} to your CV — quick course available" for s in ml_short_term[:3]] or ["Complete a course in top missing skills", "Add metrics to experience bullets", "Mirror job-ad keywords in CV"]
-        mid_items   = [f"Build a project demonstrating {s}" for s in ml_mid_term[:3]]   or ["Build portfolio project using missing skills", "Complete relevant certification"]
-        long_items  = [f"Develop deep expertise in {s}" for s in ml_long_term[:2]]      or ["Target senior roles after closing skill gaps"]
-        return (
-            CVGapPlan(short_term=short_items, mid_term=mid_items, long_term=long_items),
-            f"CV scored {ats_score:.0f}/100 with a {match_pct:.0f}% market match for {target_role} roles. "
-            f"Address the skill gaps above to improve ATS compatibility.",
-        )
+        # narrative already holds the deterministic default — nothing else to do
+
+    return CVGapPlan(short_term=short_term, mid_term=mid_term, long_term=long_term), narrative
 
 
 # ── Prometheus metrics ────────────────────────────────────────────────────────
