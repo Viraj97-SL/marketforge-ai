@@ -24,7 +24,22 @@ from dataclasses import dataclass, field
 
 import structlog
 
+from marketforge.nlp.taxonomy import canonicalise, category_of
+
 logger = structlog.get_logger(__name__)
+
+# ── Umbrella/domain labels sometimes returned by Gate 3 (LLM) extraction as a
+# standalone "skill" even though the CV already demonstrates the concept
+# through specific tools. Suppressed as a gap once the CV already shows >=2
+# distinct categories tied to the umbrella, since naming the umbrella itself
+# isn't an actionable gap at that point.
+_UMBRELLA_IMPLIED_BY_CATEGORIES: dict[str, frozenset[str]] = {
+    "machine learning":        frozenset({"ml_library", "dl_framework"}),
+    "artificial intelligence": frozenset({
+        "ml_library", "dl_framework", "llm_framework", "llm_provider",
+        "ai_concept", "ai_domain", "nlp", "computer_vision",
+    }),
+}
 
 # ── Role normalisation (mirrors ats_scorer) ───────────────────────────────────
 _ROLE_MAP: dict[str, str] = {
@@ -125,7 +140,12 @@ def analyse_gaps(
 
     top_skills    = market_data["top_skills"]       # {skill: count}
     rising_skills = set(market_data.get("rising_skills", []))
-    cv_lower      = {s.lower() for s in cv_skills}
+    # Canonical comparison (not raw .lower()) so a market skill that reached
+    # job_skills as a Gate-3 paraphrase of something already on the CV — e.g.
+    # "Retrieval-Augmented Generation" vs. the CV's "RAG" — is recognised as
+    # the same concept instead of surfacing as a contradictory gap.
+    cv_canonical  = {canonicalise(s) for s in cv_skills}
+    cv_categories = {cat for s in cv_skills if (cat := category_of(s))}
 
     if not top_skills:
         return GapAnalysis()
@@ -133,12 +153,24 @@ def analyse_gaps(
     # ── Normalise demand scores ────────────────────────────────────────────────
     max_count = max(top_skills.values()) or 1
     gaps: list[SkillGap] = []
+    seen_canonical: set[str] = set()
 
     for rank, (skill, count) in enumerate(
         sorted(top_skills.items(), key=lambda x: -x[1])[:top_n * 2]
     ):
-        if skill.lower() in cv_lower:
-            continue   # user already has this skill
+        canonical = canonicalise(skill)
+
+        if canonical in cv_canonical:
+            continue   # user already has this skill, possibly under another surface form
+
+        if canonical in seen_canonical:
+            continue   # duplicate concept already added under a different surface form
+
+        umbrella_categories = _UMBRELLA_IMPLIED_BY_CATEGORIES.get(canonical)
+        if umbrella_categories and len(cv_categories & umbrella_categories) >= 2:
+            continue   # CV already demonstrates the umbrella via specific tools
+
+        seen_canonical.add(canonical)
 
         demand_score   = count / max_count
         recency_weight = 1.2 if skill in rising_skills else 1.0

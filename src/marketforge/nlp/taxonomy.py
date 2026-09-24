@@ -161,7 +161,17 @@ SKILL_TAXONOMY: list[dict] = [
     {"canonical": "NLP",            "aliases": ["natural language processing", "nlp", "text mining"], "category": "ai_domain"},
     {"canonical": "Computer Vision","aliases": ["computer vision", "image recognition", "object detection"], "category": "ai_domain"},
     {"canonical": "Speech recognition","aliases": ["speech recognition", "asr", "whisper"], "category": "ai_domain"},
+    {"canonical": "Generative AI",  "aliases": ["generative ai", "genai", "gen-ai", "gen ai"], "category": "ai_domain"},
 ]
+
+
+def _normalise_term(term: str) -> str:
+    """
+    Collapse hyphens/underscores/extra whitespace so alias lookups aren't
+    sensitive to surface punctuation (e.g. "Retrieval-Augmented Generation"
+    matches the "retrieval augmented generation" alias for canonical "RAG").
+    """
+    return re.sub(r"[\s\-_]+", " ", term.lower().strip())
 
 
 class SkillTaxonomy:
@@ -190,7 +200,7 @@ class SkillTaxonomy:
 
             all_aliases = [canonical.lower()] + [a.lower() for a in entry.get("aliases", [])]
             for alias in all_aliases:
-                self._canonical_map[alias.strip()] = canonical
+                self._canonical_map[_normalise_term(alias)] = canonical
 
             if self._processor is not None:
                 # Only register canonical as a keyword if it's unambiguous (length > 2
@@ -227,8 +237,25 @@ class SkillTaxonomy:
         return results
 
     def resolve(self, term: str) -> str | None:
-        """Resolve an alias to its canonical form."""
-        return self._canonical_map.get(term.lower().strip())
+        """Resolve an alias to its canonical form (punctuation/whitespace-insensitive)."""
+        return self._canonical_map.get(_normalise_term(term))
+
+    def register_dynamic(self, term: str, category: str = "general") -> str:
+        """
+        Register a term with no taxonomy match as its own canonical, keyed by
+        its normalised form, so repeat occurrences of the same surface form
+        (e.g. across multiple job postings in one run) collapse onto a single
+        canonical instead of accumulating as separate "skills". Used for Gate 3
+        (LLM) output that doesn't resolve to an existing canonical — Gates 1/2
+        never need this since they only ever emit already-canonical names.
+        """
+        normalised = _normalise_term(term)
+        existing = self._canonical_map.get(normalised)
+        if existing:
+            return existing
+        self._canonical_map[normalised] = term
+        self._category_map.setdefault(term, category)
+        return term
 
     @property
     def all_canonical(self) -> list[str]:
@@ -316,8 +343,12 @@ Given a list of candidate terms extracted from a UK tech job description, identi
 ones are genuine technology skills, frameworks, tools, or programming languages.
 
 Return ONLY a JSON array of the terms that ARE genuine tech skills.
-If a term is ambiguous or not a skill, exclude it.
-Example input:  ["Python", "synergistic", "TensorFlow", "motivated", "LangGraph"]
+Exclude broad umbrella/domain labels that name a whole field rather than a
+specific technology — e.g. "Machine Learning", "Artificial Intelligence", "AI",
+"AI Engineering", "Data Science", "Deep Learning" are too generic; only return
+the specific tool, framework, language or technique being described.
+If a term is ambiguous or not a specific skill, exclude it.
+Example input:  ["Python", "synergistic", "TensorFlow", "motivated", "LangGraph", "Machine Learning"]
 Example output: ["Python", "TensorFlow", "LangGraph"]
 
 Candidate terms: {terms}
@@ -408,8 +439,17 @@ def extract_skills(text: str, run_llm_gate: bool = True) -> dict[str, list[tuple
         if unresolved:
             g3 = _llm_gate.resolve(unresolved)
             for term in g3:
-                if term not in found_canonicals:
-                    results["gate3"].append((term, "general", "gate3", 0.75))
+                # Canonicalise through the same taxonomy Gates 1/2 use, so a
+                # Gate-3 paraphrase of an already-known concept ("Retrieval-
+                # Augmented Generation") collapses onto its existing canonical
+                # ("RAG") instead of entering as a distinct "skill". Terms with
+                # no taxonomy match are registered as their own canonical so
+                # repeat occurrences in this run collapse onto each other too.
+                canonical = _taxonomy.resolve(term) or _taxonomy.register_dynamic(term)
+                if canonical not in found_canonicals:
+                    found_canonicals.add(canonical)
+                    category = _taxonomy._category_map.get(canonical, "general")
+                    results["gate3"].append((canonical, category, "gate3", 0.75))
 
     return results
 
@@ -418,6 +458,24 @@ def extract_skills_flat(text: str) -> list[tuple[str, str, str, float]]:
     """Convenience: run all gates and return a flat list."""
     r = extract_skills(text)
     return r["gate1"] + r["gate2"] + r["gate3"]
+
+
+def canonicalise(term: str) -> str:
+    """
+    Best-effort canonical identity for a skill string. Resolves known taxonomy
+    aliases (case/punctuation-insensitive); falls back to a normalised form for
+    terms not in the taxonomy so identical surface forms still compare equal.
+    Use this — not raw string/lower() equality — whenever comparing skills
+    that may have come from different extraction gates (CV vs. market data),
+    since Gate 3 can return unregistered surface variants of a known concept.
+    """
+    return _taxonomy.resolve(term) or _normalise_term(term)
+
+
+def category_of(term: str) -> str | None:
+    """Taxonomy category for a skill string, resolving aliases first."""
+    canonical = _taxonomy.resolve(term)
+    return _taxonomy._category_map.get(canonical or term)
 
 
 # ── Salary NER ────────────────────────────────────────────────────────────────
