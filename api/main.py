@@ -1848,6 +1848,12 @@ async def health() -> HealthResponse:
 
 # ── CV Upload + ATS Score + Career Gap endpoint ───────────────────────────────
 
+# Below this word count, a "successfully parsed" document is treated as
+# extraction failure (most commonly a scanned/image-only PDF) rather than a
+# genuinely terse CV.
+MIN_CV_WORD_COUNT = 30
+
+
 class CVATSBreakdown(BaseModel):
     keyword_match: int
     structure:     int
@@ -1951,6 +1957,22 @@ async def analyse_cv(
     cv = parse_cv(raw_bytes, scan.file_type)
     if cv.error:
         raise HTTPException(status_code=422, detail=f"CV could not be parsed: {cv.error}")
+
+    # A scanned/image-only PDF (or a near-blank document) "parses" without
+    # raising — pdfplumber/pypdf/python-docx just return little or no text.
+    # That used to flow silently through GDPR scrub, ATS scoring and the LLM
+    # plan, producing a confusing near-empty report with no indication that
+    # extraction actually failed. Gate on word count, not character count, so
+    # a genuinely terse one-page CV isn't rejected.
+    if len(cv.raw_text.split()) < MIN_CV_WORD_COUNT:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "No extractable text was found in this file. It may be a scanned "
+                "image rather than a text-based document — please upload a "
+                "text-based PDF or DOCX."
+            ),
+        )
 
     # ── GDPR: strip PII before any further processing ─────────────────────────
     try:
