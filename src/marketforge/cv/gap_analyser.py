@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 
 import structlog
 
-from marketforge.nlp.taxonomy import canonicalise, category_of
+from marketforge.nlp.taxonomy import canonicalise, category_of, split_compound_term
 
 logger = structlog.get_logger(__name__)
 
@@ -39,6 +39,8 @@ _UMBRELLA_IMPLIED_BY_CATEGORIES: dict[str, frozenset[str]] = {
         "ml_library", "dl_framework", "llm_framework", "llm_provider",
         "ai_concept", "ai_domain", "nlp", "computer_vision",
     }),
+    "llm":  frozenset({"llm_framework", "llm_provider", "llm_technique", "llm_infra"}),
+    "llms": frozenset({"llm_framework", "llm_provider", "llm_technique", "llm_infra"}),
 }
 
 # ── Role normalisation (mirrors ats_scorer) ───────────────────────────────────
@@ -142,6 +144,18 @@ def analyse_gaps(
     top_skills          = market_data["top_skills"]       # {skill: count}
     rising_skills       = set(market_data.get("rising_skills", []))
     skill_salary_uplift = market_data.get("skill_salary_uplift", {})
+
+    # Gate 3 sometimes stored more than one concept in a single skill string
+    # ("Agentic AI / Machine Learning") before the extraction-side fix above
+    # existed — expand those here too, at read time, so already-scraped rows
+    # don't keep surfacing as an unmatched compound gap until they're
+    # re-extracted on the next scrape.
+    if any(len(split_compound_term(s)) > 1 for s in top_skills):
+        expanded: dict[str, int] = {}
+        for skill, count in top_skills.items():
+            for part in split_compound_term(skill):
+                expanded[part] = max(expanded.get(part, 0), count)
+        top_skills = expanded
     # Canonical comparison (not raw .lower()) so a market skill that reached
     # job_skills as a Gate-3 paraphrase of something already on the CV — e.g.
     # "Retrieval-Augmented Generation" vs. the CV's "RAG" — is recognised as

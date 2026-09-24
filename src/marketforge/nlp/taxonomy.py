@@ -165,6 +165,21 @@ SKILL_TAXONOMY: list[dict] = [
 ]
 
 
+_COMPOUND_SPLIT_RE = re.compile(r"\s*(?:/|,|&|\band\b)\s*", re.I)
+
+
+def split_compound_term(term: str) -> list[str]:
+    """
+    Split a Gate-3 string that names more than one concept in one go — e.g.
+    "Agentic AI / Machine Learning" — into its individual parts, so each can
+    be canonicalised/compared on its own instead of the whole blob being
+    treated as a single unmatched "skill". A plain term with no separator
+    returns unchanged as a one-item list.
+    """
+    parts = [p.strip() for p in _COMPOUND_SPLIT_RE.split(term) if p.strip()]
+    return parts if len(parts) > 1 else [term]
+
+
 def _normalise_term(term: str) -> str:
     """
     Collapse hyphens/underscores/extra whitespace so alias lookups aren't
@@ -345,8 +360,11 @@ ones are genuine technology skills, frameworks, tools, or programming languages.
 Return ONLY a JSON array of the terms that ARE genuine tech skills.
 Exclude broad umbrella/domain labels that name a whole field rather than a
 specific technology — e.g. "Machine Learning", "Artificial Intelligence", "AI",
-"AI Engineering", "Data Science", "Deep Learning" are too generic; only return
-the specific tool, framework, language or technique being described.
+"AI Engineering", "Data Science", "Deep Learning", "LLM", "LLMs" are too
+generic; only return the specific tool, framework, language or technique
+being described. Never combine more than one concept into a single returned
+string (e.g. never return "Agentic AI / Machine Learning" — that is two
+separate, and here also both excluded, concepts).
 If a term is ambiguous or not a specific skill, exclude it.
 Example input:  ["Python", "synergistic", "TensorFlow", "motivated", "LangGraph", "Machine Learning"]
 Example output: ["Python", "TensorFlow", "LangGraph"]
@@ -438,18 +456,23 @@ def extract_skills(text: str, run_llm_gate: bool = True) -> dict[str, list[tuple
         unresolved = [t for t in g2_tokens if not _taxonomy.resolve(t)]
         if unresolved:
             g3 = _llm_gate.resolve(unresolved)
-            for term in g3:
-                # Canonicalise through the same taxonomy Gates 1/2 use, so a
-                # Gate-3 paraphrase of an already-known concept ("Retrieval-
-                # Augmented Generation") collapses onto its existing canonical
-                # ("RAG") instead of entering as a distinct "skill". Terms with
-                # no taxonomy match are registered as their own canonical so
-                # repeat occurrences in this run collapse onto each other too.
-                canonical = _taxonomy.resolve(term) or _taxonomy.register_dynamic(term)
-                if canonical not in found_canonicals:
-                    found_canonicals.add(canonical)
-                    category = _taxonomy._category_map.get(canonical, "general")
-                    results["gate3"].append((canonical, category, "gate3", 0.75))
+            for raw_term in g3:
+                # Gate 3 sometimes names more than one concept in one string
+                # ("Agentic AI / Machine Learning") — split before
+                # canonicalising so each part can match its own alias instead
+                # of the whole blob going unmatched.
+                for term in split_compound_term(raw_term):
+                    # Canonicalise through the same taxonomy Gates 1/2 use, so a
+                    # Gate-3 paraphrase of an already-known concept ("Retrieval-
+                    # Augmented Generation") collapses onto its existing canonical
+                    # ("RAG") instead of entering as a distinct "skill". Terms with
+                    # no taxonomy match are registered as their own canonical so
+                    # repeat occurrences in this run collapse onto each other too.
+                    canonical = _taxonomy.resolve(term) or _taxonomy.register_dynamic(term)
+                    if canonical not in found_canonicals:
+                        found_canonicals.add(canonical)
+                        category = _taxonomy._category_map.get(canonical, "general")
+                        results["gate3"].append((canonical, category, "gate3", 0.75))
 
     return results
 

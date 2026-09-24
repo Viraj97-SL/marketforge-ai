@@ -70,6 +70,23 @@ class TestGate2MultiWordPhrase:
         assert any("apache spark" in t.lower() for t in found), found
 
 
+class TestSplitCompoundTerm:
+    def test_splits_slash_joined_concepts(self):
+        from marketforge.nlp.taxonomy import split_compound_term
+
+        assert split_compound_term("Agentic AI / Machine Learning") == ["Agentic AI", "Machine Learning"]
+
+    def test_plain_term_unchanged(self):
+        from marketforge.nlp.taxonomy import split_compound_term
+
+        assert split_compound_term("LangGraph") == ["LangGraph"]
+
+    def test_splits_comma_and_ampersand(self):
+        from marketforge.nlp.taxonomy import split_compound_term
+
+        assert split_compound_term("Docker, Kubernetes & Terraform") == ["Docker", "Kubernetes", "Terraform"]
+
+
 @pytest.mark.skipif(not _spacy_model_available(), reason="spaCy en_core_web_sm not installed")
 class TestGate3Mocked:
     def test_llm_gate_resolves_unresolved_candidates(self, monkeypatch):
