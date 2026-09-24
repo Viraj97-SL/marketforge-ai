@@ -204,7 +204,8 @@ class TestHappyPath:
         required = {
             "session_token", "ats_score", "ats_grade", "ats_breakdown",
             "ats_issues", "skills_found", "skills_missing",
-            "keyword_match_pct", "market_match_pct",
+            "keyword_match_pct", "keyword_match_numerator", "keyword_match_denominator",
+            "market_match_pct", "market_match_sample_size",
             "gap_plan", "narrative_summary", "pii_scrubbed", "data_retained",
         }
         for field in required:
@@ -264,6 +265,23 @@ class TestHappyPath:
         assert isinstance(data["market_match_pct"], int)
         for dim, val in data["ats_breakdown"].items():
             assert isinstance(val, int), f"{dim} breakdown value {val!r} is not an int"
+
+    def test_percentages_carry_a_denominator(self, client):
+        # Symptom: "Market match 34%" / "Keyword match 53%" shown with no
+        # denominator and no stated difference between the two metrics.
+        pdf  = _make_pdf()
+        data = client.post(
+            "/api/v1/career/cv-analyse",
+            files={"cv_file": ("cv.pdf", pdf, "application/pdf")},
+            params={"target_role": "ml_engineer", "consent": "true"},
+        ).json()
+        assert isinstance(data["keyword_match_denominator"], int)
+        assert isinstance(data["keyword_match_numerator"], int)
+        assert isinstance(data["market_match_sample_size"], int)
+        # No configured market DB in this test client — both denominators
+        # must say so (0) rather than silently implying a real comparison.
+        assert data["keyword_match_denominator"] == 0
+        assert data["market_match_sample_size"] == 0
 
     def test_gap_plan_has_all_horizons(self, client):
         pdf  = _make_pdf()

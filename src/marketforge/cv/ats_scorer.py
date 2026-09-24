@@ -103,6 +103,8 @@ class ATSScore:
     issues:            list[str]          # human-readable improvement hints
     skills_found:      list[str]          # skills extracted from CV text
     keyword_match_pct: int                # % of target role's top skills present
+    keyword_match_numerator:   int        # how many of the top skills were found
+    keyword_match_denominator: int        # how many top skills were compared against (0 = no market data)
 
 
 def score_cv(
@@ -124,7 +126,7 @@ def score_cv(
     skills_found = _extract_skills(cv.raw_text, extra_skills)
 
     # Sub-scores
-    kw_score, kw_pct = _score_keywords(skills_found, target_role, issues)
+    kw_score, kw_pct, kw_matches, kw_denominator = _score_keywords(skills_found, target_role, issues)
     struct_score     = _score_structure(cv, issues)
     read_score       = _score_readability(cv.raw_text, issues)
     complete_score   = _score_completeness(cv, issues)
@@ -158,6 +160,8 @@ def score_cv(
         issues            = issues,
         skills_found      = skills_found,
         keyword_match_pct = round(kw_pct),
+        keyword_match_numerator   = kw_matches,
+        keyword_match_denominator = kw_denominator,
     )
 
 
@@ -182,7 +186,7 @@ def _score_keywords(
     skills_found: list[str],
     target_role:  str,
     issues:       list[str],
-) -> tuple[float, float]:
+) -> tuple[float, float, int, int]:
     """
     Compare CV skills against the market's top-demanded skills for target_role.
 
@@ -191,7 +195,10 @@ def _score_keywords(
       2. weekly_snapshots WHERE role_category = <normalised_role>
       3. weekly_snapshots WHERE role_category = 'all'  (global fallback)
 
-    Returns (score 0-100, raw_match_pct 0-100).
+    Returns (score 0-100, raw_match_pct 0-100, matches, denominator). A
+    denominator of 0 means no market data was available for the comparison —
+    the score/pct in that case are a neutral placeholder, not a measurement,
+    and callers should surface the 0 denominator rather than the number.
     """
     try:
         import json
@@ -248,7 +255,7 @@ def _score_keywords(
                     logger.debug("ats.keywords.global_fallback")
 
         if not market_top:
-            return 50.0, 50.0
+            return 50.0, 50.0, 0, 0
 
         found_lower = {s.lower() for s in skills_found}
         matches     = sum(1 for s in market_top if s.lower() in found_lower)
@@ -263,11 +270,11 @@ def _score_keywords(
 
         # Slight scaling: 80% match → ~96 score
         score = min(match_pct * 1.2, 100.0)
-        return score, match_pct
+        return score, match_pct, matches, len(market_top)
 
     except Exception as exc:
         logger.warning("ats.keywords.error", error=str(exc))
-        return 50.0, 50.0
+        return 50.0, 50.0, 0, 0
 
 
 def _score_structure(cv: ParsedCV, issues: list[str]) -> float:

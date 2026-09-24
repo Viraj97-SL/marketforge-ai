@@ -150,7 +150,8 @@ class UserProfile(BaseModel):
 
 
 class CareerIntelligenceReport(BaseModel):
-    market_match_pct:     int
+    market_match_pct:        int
+    market_match_sample_size: int              # postings sampled; 0 = insufficient data, market_match_pct is a placeholder
     match_distribution:   dict[str, float]    # strong / moderate / weak
     top_skill_gaps:       list[dict[str, Any]]
     sector_fit:           list[dict[str, Any]]
@@ -204,7 +205,7 @@ async def analyse_career(profile: UserProfile, request: Request, fastapi_respons
     skills_text = sec_result.sanitised_text
 
     # ── Market match via SBERT + ChromaDB ────────────────────────────────────
-    match_pct, match_dist = await asyncio.to_thread(_compute_market_match, profile.skills, profile.target_role)
+    match_pct, match_dist, match_sample_size = await asyncio.to_thread(_compute_market_match, profile.skills, profile.target_role)
 
     # ── Skill gap analysis ────────────────────────────────────────────────────
     skill_gaps            = await asyncio.to_thread(_compute_skill_gaps, profile.skills, profile.target_role)
@@ -224,6 +225,7 @@ async def analyse_career(profile: UserProfile, request: Request, fastapi_respons
 
     return CareerIntelligenceReport(
         market_match_pct=round(match_pct),
+        market_match_sample_size=match_sample_size,
         match_distribution=match_dist,
         top_skill_gaps=skill_gaps[:5],
         sector_fit=sector_fit[:3],
@@ -237,11 +239,15 @@ async def analyse_career(profile: UserProfile, request: Request, fastapi_respons
 def _compute_market_match(
     skills:      list[str],
     target_role: str = "",
-) -> tuple[float, dict[str, float]]:
+) -> tuple[float, dict[str, float], int]:
     """
     SBERT embed the skill list and compare against job descriptions for the
     target role.  When target_role is provided, only jobs with a matching
     role_category are sampled so the score reflects fit for that role.
+
+    Returns (match_pct, distribution, sample_size) — sample_size is the
+    number of postings the score was computed against; 0 means there was no
+    data at all and match_pct is a neutral placeholder, not a measurement.
     """
     try:
         import numpy as np
@@ -275,7 +281,7 @@ def _compute_market_match(
                 """)).fetchall()
 
         if not rows:
-            return 50.0, {"strong": 0.3, "moderate": 0.4, "weak": 0.3}
+            return 50.0, {"strong": 0.3, "moderate": 0.4, "weak": 0.3}, 0
 
         model       = _get_sbert()
         profile_emb = model.encode(" ".join(skills), normalize_embeddings=True)
@@ -292,10 +298,10 @@ def _compute_market_match(
             "strong":   round(strong,   3),
             "moderate": round(moderate, 3),
             "weak":     round(weak,     3),
-        }
+        }, len(rows)
     except Exception as exc:
         logger.warning("market_match.error", error=str(exc))
-        return 50.0, {"strong": 0.3, "moderate": 0.4, "weak": 0.3}
+        return 50.0, {"strong": 0.3, "moderate": 0.4, "weak": 0.3}, 0
 
 
 def _compute_skill_gaps(user_skills: list[str], target_role: str) -> list[dict[str, Any]]:
@@ -1864,8 +1870,11 @@ class CVAnalysisReport(BaseModel):
     ats_issues:        list[str]        # actionable fix suggestions
     skills_found:      list[str]        # skills extracted from CV
     skills_missing:    list[str]        # top market skills not in CV
-    keyword_match_pct: int
-    market_match_pct:  int
+    keyword_match_pct:         int
+    keyword_match_numerator:   int      # how many of the compared top skills were found
+    keyword_match_denominator: int      # how many top skills were compared against; 0 = no market data for this role
+    market_match_pct:          int
+    market_match_sample_size:  int      # postings sampled; 0 = no data, market_match_pct is a placeholder
     gap_plan:          CVGapPlan
     narrative_summary: str
     pii_scrubbed:      list[str]        # PII types that were found and stripped
@@ -1957,7 +1966,7 @@ async def analyse_cv(
     ats = await asyncio.to_thread(score_cv, cv, target_role)
 
     # ── Market match (SBERT) ───────────────────────────────────────────────────
-    match_pct, _ = await asyncio.to_thread(_compute_market_match, ats.skills_found or [target_role], target_role)
+    match_pct, _, match_sample_size = await asyncio.to_thread(_compute_market_match, ats.skills_found or [target_role], target_role)
 
     # ── Phase 2: ML gap analysis (demand × salary × recency priority scoring) ──
     from marketforge.cv.gap_analyser import analyse_gaps
@@ -2003,8 +2012,11 @@ async def analyse_cv(
         ats_issues        = ats.issues,
         skills_found      = ats.skills_found,
         skills_missing    = skills_missing,
-        keyword_match_pct = ats.keyword_match_pct,
-        market_match_pct  = round(match_pct),
+        keyword_match_pct         = ats.keyword_match_pct,
+        keyword_match_numerator   = ats.keyword_match_numerator,
+        keyword_match_denominator = ats.keyword_match_denominator,
+        market_match_pct          = round(match_pct),
+        market_match_sample_size  = match_sample_size,
         gap_plan          = gap_plan,
         narrative_summary = narrative,
         pii_scrubbed      = gdpr_ctx.pii_types_found,

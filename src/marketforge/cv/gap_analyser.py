@@ -101,6 +101,7 @@ class SkillGap:
     is_rising:           bool       # true if in rising_skills list
     time_horizon:        str        # "short" | "mid" | "long"
     market_demand_count: int        # raw count from weekly snapshot
+    salary_basis:        str        # "measured" (real per-skill salary data) | "rank_estimate" (below reporting threshold)
 
 
 @dataclass
@@ -138,8 +139,9 @@ def analyse_gaps(
     if not market_data:
         return GapAnalysis()
 
-    top_skills    = market_data["top_skills"]       # {skill: count}
-    rising_skills = set(market_data.get("rising_skills", []))
+    top_skills          = market_data["top_skills"]       # {skill: count}
+    rising_skills       = set(market_data.get("rising_skills", []))
+    skill_salary_uplift = market_data.get("skill_salary_uplift", {})
     # Canonical comparison (not raw .lower()) so a market skill that reached
     # job_skills as a Gate-3 paraphrase of something already on the CV — e.g.
     # "Retrieval-Augmented Generation" vs. the CV's "RAG" — is recognised as
@@ -175,9 +177,16 @@ def analyse_gaps(
         demand_score   = count / max_count
         recency_weight = 1.2 if skill in rising_skills else 1.0
 
-        # Salary uplift estimate: skills in top 10 demand are assumed to carry
-        # a 10–20% salary premium (crude but deterministic without per-skill data)
-        salary_factor  = 1.0 + max(0.0, (1.0 - rank / len(top_skills)) * 0.2)
+        if skill in skill_salary_uplift:
+            salary_factor = skill_salary_uplift[skill]
+            salary_basis  = "measured"
+        else:
+            # Below the salary reporting threshold for this skill — fall back
+            # to a coarse rank-based estimate (top-10-demand skills assumed to
+            # carry a 10-20% premium) rather than a measurement with too few
+            # postings behind it.
+            salary_factor = 1.0 + max(0.0, (1.0 - rank / len(top_skills)) * 0.2)
+            salary_basis  = "rank_estimate"
 
         priority_score = demand_score * salary_factor * recency_weight
 
@@ -191,6 +200,7 @@ def analyse_gaps(
             is_rising           = skill in rising_skills,
             time_horizon        = time_horizon,
             market_demand_count = count,
+            salary_basis        = salary_basis,
         ))
 
     # Sort by priority descending, then slice
@@ -235,6 +245,7 @@ def _fetch_market_data(target_role: str = "") -> dict | None:
 
         top_skills: dict[str, int] = {}
         rising_skills: list[str]   = []
+        skill_salary_uplift: dict[str, float] = {}
 
         with engine.connect() as conn:
             # ── Strategy 1: live per-role aggregation ─────────────────────────
@@ -250,6 +261,7 @@ def _fetch_market_data(target_role: str = "") -> dict | None:
 
             if rows:
                 top_skills = {r[0]: r[1] for r in rows}
+                skill_salary_uplift = _compute_skill_salary_uplift(conn, role_cat, jobs_t, skills_t)
                 logger.debug("gap_analyser.role_live", role=role_cat, skills=len(top_skills))
             else:
                 # ── Strategy 2: role-specific snapshot ────────────────────────
@@ -281,11 +293,60 @@ def _fetch_market_data(target_role: str = "") -> dict | None:
         if not top_skills:
             return None
 
-        return {"top_skills": top_skills, "rising_skills": rising_skills}
+        return {
+            "top_skills":          top_skills,
+            "rising_skills":       rising_skills,
+            "skill_salary_uplift": skill_salary_uplift,
+        }
 
     except Exception as exc:
         logger.warning("gap_analyser.fetch_error", error=str(exc))
         return None
+
+
+def _compute_skill_salary_uplift(conn, role_cat: str, jobs_t: str, skills_t: str) -> dict[str, float]:
+    """
+    Real per-skill salary uplift: median salary for postings requiring the
+    skill vs. the overall median for the role, both outlier-trimmed the same
+    way the /market/salary endpoint is. A skill's uplift is only reported
+    once its own sample clears MIN_SALARY_SAMPLE_SIZE — below that, the
+    caller falls back to the coarser rank-based estimate rather than a
+    salary "measurement" backed by a handful of postings.
+    """
+    from sqlalchemy import text
+    from marketforge.utils.stats import clean_salary_midpoints, percentile, MIN_SALARY_SAMPLE_SIZE
+
+    rows = conn.execute(text(f"""
+        SELECT js.skill, j.job_id, j.salary_midpoint
+        FROM {skills_t} js
+        JOIN {jobs_t} j ON j.job_id = js.job_id
+        WHERE j.role_category = :role AND j.salary_midpoint IS NOT NULL
+    """), {"role": role_cat}).fetchall()
+
+    if not rows:
+        return {}
+
+    overall_by_job: dict[str, float] = {}
+    per_skill: dict[str, list[float]] = {}
+    for skill, job_id, midpoint in rows:
+        overall_by_job.setdefault(job_id, midpoint)
+        per_skill.setdefault(skill, []).append(midpoint)
+
+    overall_clean = clean_salary_midpoints(list(overall_by_job.values()))
+    overall_median = percentile(sorted(overall_clean), 50) if overall_clean else None
+    if not overall_median:
+        return {}
+
+    uplift: dict[str, float] = {}
+    for skill, midpoints in per_skill.items():
+        clean = clean_salary_midpoints(midpoints)
+        if len(clean) < MIN_SALARY_SAMPLE_SIZE:
+            continue
+        skill_median = percentile(sorted(clean), 50)
+        if skill_median:
+            uplift[skill] = skill_median / overall_median
+
+    return uplift
 
 
 def _classify_horizon(skill: str) -> str:
